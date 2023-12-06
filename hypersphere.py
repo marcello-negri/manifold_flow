@@ -1,7 +1,8 @@
 import numpy as np
 import torch
 import os
-from utils_manifold import build_flow_manifold, train_model, generate_spherical_with_noise, plot_loss, generate_samples, evaluate_uniform_on_sphere
+from utils_manifold import (build_flow_manifold, train_model, generate_spherical_with_noise, plot_loss, generate_samples,
+                            evaluate_uniform_on_sphere, plot_samples, plot_pairwise_angle_distribution)
 import argparse
 
 parser = argparse.ArgumentParser(description='Process some integers.')
@@ -38,7 +39,7 @@ def main():
     # build flow
     flow = build_flow_manifold(flow_dim=args.d, n_layers=3, hidden_features=256, device=device)
 
-    params = dict(lr=1e-3, epochs=args.epochs, device=device, r=args.r)
+    params = dict(lr=5e-3, epochs=args.epochs, device=device, r=args.r)
 
     # train flow
     flow, loss = train_model(model=flow, data=data, **params)
@@ -46,8 +47,12 @@ def main():
 
     # evaluate learnt distribution
     samples, log_probs = generate_samples(flow)
-    mse_log_probs = evaluate_uniform_on_sphere(args.d, args.r, log_probs)
+    mse_log_probs = evaluate_uniform_on_sphere(d=args.d, r=args.r, samples=samples, loglik=log_probs)
     print(f"MSE: {mse_log_probs:.2f}")
+    plot_samples(samples)
+    plot_pairwise_angle_distribution(samples)
+
+    breakpoint()
 
 if __name__ == "__main__":
     main()
