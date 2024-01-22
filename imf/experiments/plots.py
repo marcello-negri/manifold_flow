@@ -133,8 +133,8 @@ def plot_density (ax, samples, points_surface, title):
 
 def density_gt (points, dataset):
     points_torch = torch.from_numpy(points).float()
-    p = dataset.density(points_torch)
-    return p.detach().cpu().numpy()
+    logp = dataset.density(points_torch)
+    return logp.exp().detach().cpu().numpy()
 
 def density_flow (points, flow, device="cuda"):
     points_torch = torch.from_numpy(points).float().to(device)
