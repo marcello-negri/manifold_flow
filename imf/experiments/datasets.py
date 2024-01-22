@@ -5,6 +5,7 @@ import numpy as np
 from imf.experiments.utils_manifold import cartesian_to_spherical_torch
 from imf.experiments.vonmises_fisher import vMF, MixvMF
 
+
 class Dataset():
     def __init__(self, args):
         self.args = args
@@ -14,7 +15,7 @@ class Dataset():
         if not os.path.exists(self.dataset_folder):
             os.makedirs(self.dataset_folder)
 
-    def density(self, points):
+    def log_density(self, points):
         raise NotImplementedError
 
     def sample(self, n_samples):
@@ -47,6 +48,7 @@ class Dataset():
         np.random.seed(self.args.seed)
         torch.manual_seed(self.args.seed)
 
+
 class VonMisesFisher(Dataset):
     def __init__(self, args):
         super().__init__(args)
@@ -66,7 +68,7 @@ class VonMisesFisher(Dataset):
             self.mu = mu / self.norm(input=mu, dim=0)
         else:
             mu = torch.ones(self.args.datadim)
-            mu = mu /  self.norm(input=mu, dim=0)
+            mu = mu / self.norm(input=mu, dim=0)
             self.mu = mu * self.args.mu
 
     def initialize_vMF(self):
@@ -82,14 +84,14 @@ class VonMisesFisher(Dataset):
 
         return samples
 
-    def density(self, points):
+    def lop_density(self, points):
         if isinstance(points, np.ndarray):
             points = torch.from_numpy(points).float()
 
         logp = self.vMF.forward(points)
         logp = self.check_tuple(logp)
 
-        return torch.exp(logp)
+        return logp
 
     def check_tuple(self, obj):
         # the child class VonMisesFisherMixture returns a tuple (obj, obj per component)
@@ -97,6 +99,7 @@ class VonMisesFisher(Dataset):
             obj = obj[0]
 
         return obj
+
 
 class VonMisesFisherMixture(VonMisesFisher):
     def __init__(self, args):
@@ -151,11 +154,11 @@ class Uniform(Dataset):
 
         return samples
 
-    def density(self, points):
-        p = torch.ones(points.shape[0])
-        norm_const = 1. / self.surface_prob
+    def log_density(self, points):
+        logp = torch.ones(points.shape[0])
+        norm_const = - np.log(self.surface_prob)
 
-        return p / norm_const
+        return logp * norm_const
 
 
 class UniformCheckerboard(Uniform):
@@ -178,12 +181,12 @@ class UniformCheckerboard(Uniform):
 
         return samples[:n_samples]
 
-    def density(self, points):
-        p = torch.ones(points.shape[0]) * 1e-10
+    def log_density(self, points):
+        logp = torch.ones(points.shape[0]) * -10
         mask = self.checkerboard_mask(points)
-        p[mask] = 1. / self.surface_prob
+        logp[mask] = -np.log(self.surface_prob)
 
-        return p
+        return logp
 
     def checkerboard_mask(self, points_cart):
         assert self.args.n_theta > 1 and self.args.n_phi > 1

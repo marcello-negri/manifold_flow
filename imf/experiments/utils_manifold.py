@@ -359,30 +359,23 @@ def evaluate_flow_rnf(test_data, simulator, flow, rnf, device='cuda'):
 
     return MSE_flow, MSE_rnf, MSE_dist_flow, MSE_dist_rnf
 
-
-def evaluate_samples(test_data, flow, rnf, args, device='cuda'):
-    if args.dataset == 'vonmises_fisher':
-        logp_gt = von_mises_fisher.evaluate_mises_fisher(test_data, args)
-    elif args.dataset == 'sphere_checkerboard':
-        logp_gt = dist_sphere.evaluate_sphere_checkerboard(test_data)
-
-    test_data_torch = torch.from_numpy(test_data).float().to(device)
+def evaluate_samples(dataset, test_data, flow, rnf, args):
+    # ground truth
+    logp_gt = dataset.log_density(test_data).detach().cpu().numpy()
 
     # proposed flow
-    angles = flow.transform_to_noise(test_data_torch, context=None)
+    angles = flow.transform_to_noise(test_data, context=None)
     logp_flow = flow._distribution.log_prob(angles, context=None)
     proj_data_flow, logabsdet = flow._transform.inverse(angles, context=None)
     logp_flow = (logp_flow - logabsdet).detach().cpu().numpy()
 
     # rnf
-    logp_rnf = rnf_forward_logp(rnf, test_data_torch, args)
+    logp_rnf = rnf_forward_logp(rnf, test_data, args)
 
     MSE_flow = np.mean(np.square(logp_flow - logp_gt))
     MSE_rnf = np.mean(np.square(logp_rnf - logp_gt))
 
-
     return MSE_flow, MSE_rnf
-
 
 def rnf_forward_logp (rnf, data, args):
     logp = []
@@ -392,7 +385,8 @@ def rnf_forward_logp (rnf, data, args):
         left, right = i * args.batchsize, (i + 1) * args.batchsize
         data_proj_, logp_, _ = rnf.forward(data[left:right].detach().cpu())
         logp += list(logp_.detach().cpu().numpy())
-    return logp
+    return np.array(logp)
+
 
 def rnf_forward_points (rnf, data, args):
     data_proj = []

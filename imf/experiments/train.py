@@ -149,6 +149,7 @@ def main():
     dataset = datasets.create_dataset(args=args)
     train_data_np, test_data_np = dataset.load_samples(overwrite=False)
     train_data = torch.from_numpy(train_data_np).float().to(device)
+    test_data = torch.from_numpy(test_data_np).float().to(device)
 
     plot_samples(train_data_np)
 
@@ -206,10 +207,10 @@ def main():
 
     plot_icosphere(data=train_data_np, dataset=dataset, flow=flow, samples_flow=samples_flow, rnf=rnf, samples_rnf=samples_rnf, device='cuda', args=args, plot_rnf=False)
     breakpoint()
-    MSE_flow, MSE_rnf = evaluate_samples(train_data_np, flow, rnf, args, device='cuda')
+    MSE_flow, MSE_rnf = evaluate_samples(dataset=dataset, test_data=train_data, flow=flow, rnf=rnf, args=args)
     print(f"TRAIN - MSE_flow: {MSE_flow:.3f} and MSE_rnf: {MSE_rnf:.3f}")
 
-    MSE_flow, MSE_rnf = evaluate_samples(test_data_np, flow, rnf, args, device='cuda')
+    MSE_flow, MSE_rnf = evaluate_samples(dataset=dataset, test_data=test_data, flow=flow, rnf=rnf, args=args)
     print(f"TEST - MSE_flow: {MSE_flow:.3f} and MSE_rnf: {MSE_rnf:.3f}")
     # MSE_flow, MSE_rnf, MSE_dist_flow, MSE_dist_rnf = evaluate_flow_rnf(test_data_np, simulator, flow, rnf, device='cuda')
     # print(f"MSE_flow: {MSE_flow:.3f} and MSE_rnf: {MSE_rnf:.3f}")
