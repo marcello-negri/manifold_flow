@@ -47,7 +47,6 @@ parser.add_argument('--n_theta', metavar='nt', type=int, default=6, help='number
 parser.add_argument('--n_phi', metavar='np', type=int, default=6, help='number of columns in the checkerboard (n_phi>0 and must be even)')
 # lp uniform parameters
 parser.add_argument('--beta', metavar='be', type=float, default=1.0, help='p of the lp norm')
-parser.add_argument('--radius', metavar='ra', type=float, default=1.0, help='radius of manifold')
 
 
 args = parser.parse_args()
@@ -77,33 +76,53 @@ def main():
 
     plot_samples(train_data_np)
 
-    # build flow
-    # flow = build_flow_forward(args)
-    flow = build_flow_reverse(args)
-    define_model_name(args, dataset)
+    from enflows.transforms.injective.utils import SimpleNN
+    import time
+    from enflows.transforms.injective.utils import spherical_to_cartesian_torch, cartesian_to_spherical_torch
 
-    # torch.autograd.detect_anomaly(True)
+    model = SimpleNN(input_size=args.datadim-1, hidden_size=200, output_size=1).to(args.device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    dataloader = torch.utils.data.DataLoader(train_data, batch_size=800, shuffle=True)
+    start_time = time.monotonic()
+    model.train()
+    try:
+        for epoch in range(args.epochs):
+            for i, batch_data in enumerate(dataloader):
+                optimizer.zero_grad()
+                # add small noise to the dataset to prevent overfitting
+                batch_data.requires_grad_(True)
+                # project data on the manifold
+                thetas = cartesian_to_spherical_torch(batch_data)[:,:-1]
+                radius = model(thetas)
+                spherical = torch.cat((thetas, radius), dim=-1)
+                cartesian = spherical_to_cartesian_torch(spherical)
+                loss = torch.mean(torch.abs(cartesian-batch_data))
 
-    # train flow
-    if not os.path.isfile(args.model_name) or args.overwrite:
-        # flow, loss = train_model_forward(model=flow, data=train_data, args=args, early_stopping=True)
-        flow, loss = train_model_reverse(model=flow, args=args)
-        plot_loss(loss)
-        flow.eval()
-    else:
-        # flow = build_flow_forward(args)
-        flow = build_flow_reverse(args)
-        print(args.model_name)
-        flow.load_state_dict(torch.load(args.model_name))
-        flow.eval()
+                loss.backward()
+                optimizer.step()
+                with torch.no_grad():
+                    thetas_v = cartesian_to_spherical_torch(test_data)[:, :-1]
+                    radius_v = model(thetas_v)
+                    spherical_v = torch.cat((thetas_v, radius_v), dim=-1)
+                    cartesian_v = spherical_to_cartesian_torch(spherical_v)
+                    loss_v = torch.mean(torch.abs(cartesian_v - test_data))
 
-    # evaluate learnt distribution
-    samples_flow, log_probs_flow = generate_samples(flow, sample_size=100, n_iter=100)
-    # plot_icosphere(data=train_data_np, dataset=dataset, flow=flow, samples_flow=samples_flow, rnf=None, samples_rnf=None, device='cuda', args=args, plot_rnf=False)
-    if args.dataset == "uniform":
-        plot_pairwise_angle_distribution(samples_flow, n_samples=1000)
-    plot_angle_distribution(samples_flow=samples_flow, samples_gt=train_data_np, batchsize=100, device=args.device)
-    plot_samples_pca(samples_flow, train_data_np)
+                print(f"Loss epoch {epoch}: train {loss.item():.5f} - test {loss_v.item():.4f}")
+    except KeyboardInterrupt:
+        print("interrupted..")
+
+    thetas = cartesian_to_spherical_torch(train_data)[:,:-1]
+    radius = model(thetas)
+    spherical = torch.cat((thetas, radius), dim=-1)
+    cartesian = spherical_to_cartesian_torch(spherical)
+    plot_samples(cartesian.detach().cpu().numpy())
+
+    thetas = cartesian_to_spherical_torch(test_data)[:, :-1]
+    radius = model(thetas)
+    spherical = torch.cat((thetas, radius), dim=-1)
+    cartesian = spherical_to_cartesian_torch(spherical)
+    plot_samples(cartesian.detach().cpu().numpy())
+
 
 if __name__ == "__main__":
     main()

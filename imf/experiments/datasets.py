@@ -1,6 +1,8 @@
 import os
 import torch
 import numpy as np
+import scipy as sp
+import rpy2.robjects as robjects
 
 from imf.experiments.utils_manifold import cartesian_to_spherical_torch
 from imf.experiments.vonmises_fisher import vMF, MixvMF
@@ -9,7 +11,7 @@ from imf.experiments.vonmises_fisher import vMF, MixvMF
 class Dataset():
     def __init__(self, args):
         self.args = args
-        self.dataset_suffix = f"_e{self.args.epsilon:.2f}"
+        self.dataset_suffix = f"_d{self.args.datadim:d}_n{self.args.n_samples_dataset:d}_e{self.args.epsilon:.2f}"
         self.dataset_folder = self.args.data_folder + f"/{self.args.dataset}"
 
         if not os.path.exists(self.dataset_folder):
@@ -29,8 +31,8 @@ class Dataset():
             samples_train = np.load(train_filename)
         else:
             samples_train = self.sample(self.args.n_samples_dataset).detach().numpy()
-            noise_train = np.random.normal(loc=0.0, scale=1.0 * self.args.epsilon, size=self.args.n_samples_dataset)
-            samples_train = samples_train + noise_train.reshape(-1,1)
+            noise_train = np.random.normal(loc=0.0, scale=1.0 * self.args.epsilon, size=samples_train.shape)
+            samples_train = samples_train + noise_train
             np.save(train_filename, samples_train)
 
         test_filename = f"{self.dataset_folder}/x_test{self.dataset_suffix}.npy"
@@ -38,8 +40,8 @@ class Dataset():
             samples_test = np.load(test_filename)
         else:
             samples_test = self.sample(self.args.n_samples_dataset).detach().numpy()
-            noise_test = np.random.normal(loc=0.0, scale=1.0 * self.args.epsilon, size=self.args.n_samples_dataset)
-            samples_test = samples_test + noise_test.reshape(-1,1)
+            noise_test = np.random.normal(loc=0.0, scale=1.0 * self.args.epsilon, size=samples_train.shape)
+            samples_test = samples_test + noise_test
             np.save(test_filename, samples_test)
 
         return samples_train, samples_test
@@ -84,7 +86,7 @@ class VonMisesFisher(Dataset):
 
         return samples
 
-    def lop_density(self, points):
+    def log_density(self, points):
         if isinstance(points, np.ndarray):
             points = torch.from_numpy(points).float()
 
@@ -146,19 +148,29 @@ class Uniform(Dataset):
     def __init__(self, args):
         super().__init__(args)
 
-        self.surface_prob = 4 * np.pi
+        self.compute_log_surface()
 
     def sample(self, n_samples):
         samples = torch.randn([n_samples, self.args.datadim])
         samples /= torch.norm(samples, dim=1).reshape(-1, 1)
 
-        return samples
+        return samples * self.args.radius
 
     def log_density(self, points):
         logp = torch.ones(points.shape[0])
-        norm_const = - np.log(self.surface_prob)
+        norm_const = - self.log_surface_area
 
         return logp * norm_const
+
+    def compute_log_surface(self):
+        d = self.args.datadim
+        r = self.args.radius
+
+        log_const_1 = np.log(2) + 0.5 * d * np.log(np.pi)
+        log_const_2 = (d - 1) * np.log(r)
+        log_const_3 = - sp.special.loggamma(0.5 * d)
+
+        self.log_surface_area = log_const_1 + log_const_2 + log_const_3
 
 
 class UniformCheckerboard(Uniform):
@@ -166,8 +178,6 @@ class UniformCheckerboard(Uniform):
         super().__init__(args)
 
         assert self.args.datadim == 3
-
-        self.surface_prob = 2 * np.pi
         self.dataset_suffix += f"_nr{self.args.n_theta:d}_nc{self.args.n_phi:d}"
 
     def sample(self, n_samples):
@@ -184,9 +194,13 @@ class UniformCheckerboard(Uniform):
     def log_density(self, points):
         logp = torch.ones(points.shape[0]) * -10
         mask = self.checkerboard_mask(points)
-        logp[mask] = -np.log(self.surface_prob)
+        logp[mask] = -self.log_surface_area
 
         return logp
+
+    def compute_log_surface(self):
+        # density is defined on the mask only, which covers half of the surface area --> 2pi
+        self.log_surface_area = np.log(2*np.pi)
 
     def checkerboard_mask(self, points_cart):
         assert self.args.n_theta > 1 and self.args.n_phi > 1
@@ -205,12 +219,41 @@ class UniformCheckerboard(Uniform):
 
         return mask
 
+class LpUniform(Uniform):
+    '''
+    Note: the surface of a Lp unit ball is not known analytically because it requires a complicated integral
+          (see https://en.wikipedia.org/wiki/Volume_of_an_n-ball#Relation_with_surface_area_2),
+          so log_density returns a constant value, which is however not the correct one
+    '''
+    def __init__(self, args):
+        super().__init__(args)
+
+        self.alpha = self.args.beta ** (1./self.args.beta)
+        robjects.r.source("./utils.R")
+        self.sample_gen_norm = robjects.r['sample_gen_norm']
+        self.compute_log_surface()
+
+    def sample(self, n_samples):
+        samples = self.sample_gen_norm(x=self.args.datadim * n_samples, alpha=self.alpha, beta=self.args.beta, mu=0)
+        samples = np.array(samples)
+        samples = samples.reshape((n_samples, self.args.datadim))
+        samples_norm = self.lp_norm(samples, p=self.args.beta) * self.args.radius
+
+        return torch.from_numpy(samples_norm).float()
+
+    def lp_norm(self, arr, p):
+        norm = np.sum(np.power(np.abs(arr), p), 1)
+        norm = np.power(norm, 1 / p).reshape(-1, 1)
+        return arr / norm
+
 
 def create_dataset(args):
     if args.dataset == 'uniform':
         dataset = Uniform(args)
     elif args.dataset == 'uniform_checkerboard':
         dataset = UniformCheckerboard(args)
+    elif args.dataset == 'lp_uniform':
+        dataset = LpUniform(args)
     elif args.dataset == 'vonmises_fisher_mixture':
         dataset = VonMisesFisherMixture(args)
     elif args.dataset == 'vonmises_fisher_mixture_spiral':
