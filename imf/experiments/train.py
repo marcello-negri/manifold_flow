@@ -26,6 +26,7 @@ parser.add_argument("--logabs_jacobian", type=str, default="analytical", choices
 parser.add_argument("--architecture", type=str, default="circular", choices=["circular", "ambient", "unbounded", "unbounded_circular"])
 parser.add_argument("--device", type=str, default="cuda", help='device for training the model')
 parser.add_argument("--learn_manifold", action="store_true", help="learn the manifold together with the density")
+parser.add_argument("--kl_div", type=str, default="forward", choices=["forward", "reverse"])
 
 
 # DATASETS PARAMETERS
@@ -78,22 +79,27 @@ def main():
     plot_samples(train_data_np)
 
     # build flow
-    # flow = build_flow_forward(args)
-    flow = build_flow_reverse(args)
+    if args.kl_div == "forward":
+        flow = build_flow_forward(args)
+    elif args.kl_div == "reverse":
+        flow = build_flow_reverse(args)
     define_model_name(args, dataset)
 
     # torch.autograd.detect_anomaly(True)
 
     # train flow
     if not os.path.isfile(args.model_name) or args.overwrite:
-        # flow, loss = train_model_forward(model=flow, data=train_data, args=args, early_stopping=True)
-        flow, loss = train_model_reverse(model=flow, args=args)
+        if args.kl_div == "forward":
+            flow, loss = train_model_forward(model=flow, data=train_data, args=args, early_stopping=True)
+        elif args.kl_div == "reverse":
+            flow, loss = train_model_reverse(model=flow, args=args)
         plot_loss(loss)
         flow.eval()
     else:
-        # flow = build_flow_forward(args)
-        flow = build_flow_reverse(args)
-        print(args.model_name)
+        if args.kl_div == "forward":
+            flow = build_flow_forward(args)
+        elif args.kl_div == "reverse":
+            flow = build_flow_reverse(args)
         flow.load_state_dict(torch.load(args.model_name))
         flow.eval()
 
