@@ -27,7 +27,9 @@ parser.add_argument("--architecture", type=str, default="circular", choices=["ci
 parser.add_argument("--device", type=str, default="cuda", help='device for training the model')
 parser.add_argument("--learn_manifold", action="store_true", help="learn the manifold together with the density")
 parser.add_argument("--kl_div", type=str, default="forward", choices=["forward", "reverse"])
-
+parser.add_argument('--T0', metavar='T0', type=float, default=2., help='initial temperature')
+parser.add_argument('--Tn', metavar='Tn', type=float, default=1, help='final temperature')
+parser.add_argument('--iter_per_cool_step', metavar='ics', type=int, default=50, help='iterations per cooling step in simulated annealing')
 
 # DATASETS PARAMETERS
 parser.add_argument("--data_folder", type=str, default="/home/negri0001/Documents/Marcello/cond_flows/manifold_flow/imf/experiments/data")
@@ -72,11 +74,12 @@ def main():
 
     # load dataset and samples
     dataset = create_dataset(args=args)
-    train_data_np, test_data_np = dataset.load_samples(overwrite=True)
+    train_data_np = dataset.load_samples(split="train", overwrite=True)
+    test_data_np = dataset.load_samples(split="test", overwrite=True)
     train_data = torch.from_numpy(train_data_np).float().to(args.device)
     test_data = torch.from_numpy(test_data_np).float().to(args.device)
 
-    plot_samples(train_data_np)
+    plot_samples(train_data_np, n_samples=100000)
 
     # build flow
     if args.kl_div == "forward":
@@ -92,7 +95,7 @@ def main():
         if args.kl_div == "forward":
             flow, loss = train_model_forward(model=flow, data=train_data, args=args, early_stopping=True)
         elif args.kl_div == "reverse":
-            flow, loss = train_model_reverse(model=flow, args=args)
+            flow, loss = train_model_reverse(model=flow, dataset=dataset, args=args)
         plot_loss(loss)
         flow.eval()
     else:

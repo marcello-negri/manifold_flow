@@ -26,8 +26,10 @@ def build_flow_forward(args, clamp_theta=False):
     if args.learn_manifold:
         manifold_mapping = LearnableManifoldFlow(n=args.datadim - 1, max_radius=2., logabs_jacobian=args.logabs_jacobian)
     else:
-        manifold_mapping = LpManifoldFlow(norm=1, p=args.beta, logabs_jacobian=args.logabs_jacobian)
-        # manifold_mapping = SphereFlow(n=args.datadim - 1, r=1., logabs_jacobian=args.logabs_jacobian)
+        if args.dataset == "lp_uniform":
+            manifold_mapping = LpManifoldFlow(norm=1, p=args.beta, logabs_jacobian=args.logabs_jacobian)
+        else:
+            manifold_mapping = SphereFlow(n=args.datadim - 1, r=1., logabs_jacobian=args.logabs_jacobian)
 
     transformation_layers.append(manifold_mapping)
 
@@ -82,18 +84,18 @@ def build_flow_reverse(args, clamp_theta=False):
     if args.learn_manifold:
         manifold_mapping = LearnableManifoldFlow(n=args.datadim - 1, max_radius=2., logabs_jacobian=args.logabs_jacobian)
     else:
-        if isinstance(base_dist, UniformSphere):
-            manifold_mapping = LpManifoldFlow(norm=1., p=args.beta, logabs_jacobian=args.logabs_jacobian)
-            radius = np.array(manifold_mapping.r_given_theta(base_dist.sample(1000)))
-            norm = RADIUS_CONST / radius.mean()
-            manifold_mapping.norm = norm
+        if args.dataset == "lp_uniform":
+            if isinstance(base_dist, UniformSphere):
+                manifold_mapping = LpManifoldFlow(norm=1., p=args.beta, logabs_jacobian=args.logabs_jacobian)
+                radius = np.array(manifold_mapping.r_given_theta(base_dist.sample(1000)))
+                norm = RADIUS_CONST / radius.mean()
+                manifold_mapping.norm = norm
+            else:
+                warnings.warn("The logabsdet of the Jacobian for the LpManifold can become unstable "
+                              "it the base distribution is not UniformSphere()")
+                manifold_mapping = LpManifoldFlow(norm=1., p=args.beta, logabs_jacobian=args.logabs_jacobian)
         else:
-            warnings.warn("The logabsdet of the Jacobian for the LpManifold can become unstable "
-                          "it the base distribution is not UniformSphere()")
-            manifold_mapping = LpManifoldFlow(norm=1., p=args.beta, logabs_jacobian=args.logabs_jacobian)
-
-        # manifold_mapping = SphereFlow(n=args.datadim - 1, r=RADIUS_CONST, logabs_jacobian=args.logabs_jacobian)
-        # the radius is set to 1.6
+            manifold_mapping = SphereFlow(n=args.datadim - 1, r=RADIUS_CONST, logabs_jacobian=args.logabs_jacobian)
 
     transformation_layers.append(manifold_mapping)
 
@@ -145,7 +147,7 @@ def build_flow_circular_fwd(flow_dim, n_layers=3, hidden_features=256, device='c
     return base_dist, transformation_layers
 
 def build_flow_circular_rvs(flow_dim, n_layers=3, hidden_features=256, device='cuda'):
-    torch_one = torch.ones(1, device=device)
+    # torch_one = torch.ones(1, device=device)
     # base_dist = Uniform(shape=[flow_dim - 1], low=-torch_one, high=torch_one)
     base_dist = UniformSphere(shape=[flow_dim - 1])
     # base_dist = StandardNormal(shape=[flow_dim-1])
@@ -168,16 +170,17 @@ def build_flow_circular_rvs(flow_dim, n_layers=3, hidden_features=256, device='c
         # transformation_layers.append(
         #         CircularAutoregressiveRationalQuadraticSpline(num_input_channels=flow_dim - 1,
         #                                                       num_hidden_channels=hidden_features,
-        #                                                       num_blocks=3, num_bins=10, tail_bound=1,
+        #                                                       num_blocks=3, num_bins=50, tail_bound=1,
         #                                                       ind_circ=[i for i in range(flow_dim - 1)])
         # )
         transformation_layers.append(
-            InverseTransform(
+            # InverseTransform(
                 CircularCoupledRationalQuadraticSpline(num_input_channels=flow_dim - 1,
                                                        num_hidden_channels=hidden_features,
-                                                       num_blocks=3, num_bins=10, tail_bound=1,
+                                                       num_blocks=3, num_bins=8, tail_bound=1,
                                                        ind_circ=[i for i in range(flow_dim - 1)])
-            )
+            # )
+
         )
 
     transformation_layers.append(
@@ -198,7 +201,7 @@ def build_flow_ambient_fwd(flow_dim, n_layers=3, hidden_features=256, device='cu
     # Define an invertible transformation
     transformation_layers = []
 
-    densenet_builder = LipschitzDenseNetBuilder(input_channels=flow_dim, densenet_depth=3, activation_function=Sin(w0=1), lip_coeff=.97,)
+    densenet_builder = LipschitzDenseNetBuilder(input_channels=flow_dim, densenet_depth=3, activation_function=Sin(w0=10), lip_coeff=.97,)
 
     for _ in range(n_layers):
         transformation_layers.append(RandomPermutation(features=flow_dim))
@@ -206,11 +209,11 @@ def build_flow_ambient_fwd(flow_dim, n_layers=3, hidden_features=256, device='cu
 
         # transformation_layers.append(SVDLinear(features= flow_dim - 1, num_householder=4))
 
-        transformation_layers.append(
-                MaskedSumOfSigmoidsTransform(features=flow_dim, hidden_features=hidden_features, num_blocks=3, n_sigmoids=30)
-        )
+        # transformation_layers.append(
+        #         MaskedSumOfSigmoidsTransform(features=flow_dim, hidden_features=hidden_features, num_blocks=3, n_sigmoids=30)
+        # )
 
-        # transformation_layers.append(iResBlock(densenet_builder.build_network(), brute_force=True))
+        transformation_layers.append(iResBlock(densenet_builder.build_network(), brute_force=True))
 
     return base_dist, transformation_layers
 
@@ -239,27 +242,28 @@ def build_flow_unbounded_fwd(flow_dim, n_layers=3, hidden_features=256, device='
 
 def build_flow_unbounded_rvs(flow_dim, n_layers=3, hidden_features=256, device='cuda'):
     base_dist = StandardNormal(shape=[flow_dim - 1])
+    # base_dist = UniformSphere(shape=[flow_dim - 1])
     # Define an invertible transformation
     transformation_layers = []
 
-    densenet_builder = LipschitzDenseNetBuilder(input_channels=flow_dim-1, densenet_depth=3, activation_function=Sin(w0=1), lip_coeff=.97,)
+    densenet_builder = LipschitzDenseNetBuilder(input_channels=flow_dim-1, densenet_depth=3, activation_function=Sin(w0=1), lip_coeff=.97)
 
     for _ in range(n_layers):
         transformation_layers.append(RandomPermutation(features=flow_dim-1))
-        # transformation_layers.append(SVDLinear(features= flow_dim - 1, num_householder=4))
+        # transformation_layers.append(InverseTransform(SVDLinear(features= flow_dim - 1, num_householder=4)))
 
-        transformation_layers.append(
-            InverseTransform(
+        # transformation_layers.append(InverseTransform(iResBlock(densenet_builder.build_network(), brute_force=True)))
+        # transformation_layers.append(iResBlock(densenet_builder.build_network(), brute_force=True))
+        transformation_layers.append(InverseTransform(
                 MaskedSumOfSigmoidsTransform(features=flow_dim - 1, hidden_features=hidden_features, num_blocks=3,
-                                             n_sigmoids=30)
-            )
+                                             n_sigmoids=30))
         )
         transformation_layers.append(
             InverseTransform(
                 ActNorm(features=flow_dim - 1)
             )
         )
-        # transformation_layers.append(iResBlock(densenet_builder.build_network(), brute_force=True))
+
 
     transformation_layers.append(
             ConstrainedAnglesSigmoid(temperature=1, learn_temperature=True)

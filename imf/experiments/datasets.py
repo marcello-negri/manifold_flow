@@ -23,32 +23,17 @@ class Dataset():
     def sample(self, n_samples):
         raise NotImplementedError
 
-    def load_samples(self, overwrite=False):
-        self.set_random_seed()
-
-        train_filename = f"{self.dataset_folder}/x_train{self.dataset_suffix}.npy"
-        if os.path.isfile(train_filename) and not overwrite:
-            samples_train = np.load(train_filename)
+    def load_samples(self, split, overwrite=False):
+        filename = f"{self.dataset_folder}/x_{split}{self.dataset_suffix}.npy"
+        if os.path.isfile(filename) and not overwrite:
+            samples = np.load(filename)
         else:
-            samples_train = self.sample(self.args.n_samples_dataset).detach().numpy()
-            noise_train = np.random.normal(loc=0.0, scale=1.0 * self.args.epsilon, size=samples_train.shape)
-            samples_train = samples_train + noise_train
-            np.save(train_filename, samples_train)
+            samples = self.sample(self.args.n_samples_dataset).detach().cpu().numpy()
+            noise_train = np.random.normal(loc=0.0, scale=1.0 * self.args.epsilon, size=samples.shape)
+            samples = samples + noise_train
+            np.save(filename, samples)
 
-        test_filename = f"{self.dataset_folder}/x_test{self.dataset_suffix}.npy"
-        if os.path.isfile(test_filename) and not overwrite:
-            samples_test = np.load(test_filename)
-        else:
-            samples_test = self.sample(self.args.n_samples_dataset).detach().numpy()
-            noise_test = np.random.normal(loc=0.0, scale=1.0 * self.args.epsilon, size=samples_train.shape)
-            samples_test = samples_test + noise_test
-            np.save(test_filename, samples_test)
-
-        return samples_train, samples_test
-
-    def set_random_seed(self):
-        np.random.seed(self.args.seed)
-        torch.manual_seed(self.args.seed)
+        return samples
 
 
 class VonMisesFisher(Dataset):
@@ -61,15 +46,15 @@ class VonMisesFisher(Dataset):
         self.dataset_suffix += f"_k{self.args.kappa:.2f}"
 
     def initialize_kappa(self):
-        self.kappa = torch.tensor(self.args.kappa)
+        self.kappa = torch.tensor(self.args.kappa, device=self.args.device)
 
     def initialize_mu(self):
         if self.args.mu is None:
-            mu = torch.zeros(self.args.datadim)
+            mu = torch.zeros(self.args.datadim, device=self.args.device)
             mu[-1] = 1.0
             self.mu = mu / self.norm(input=mu, dim=0)
         else:
-            mu = torch.ones(self.args.datadim)
+            mu = torch.ones(self.args.datadim, device=self.args.device)
             mu = mu / self.norm(input=mu, dim=0)
             self.mu = mu * self.args.mu
 
@@ -88,7 +73,7 @@ class VonMisesFisher(Dataset):
 
     def log_density(self, points):
         if isinstance(points, np.ndarray):
-            points = torch.from_numpy(points).float()
+            points = torch.from_numpy(points).float().to(self.args.device)
 
         logp = self.vMF.forward(points)
         logp = self.check_tuple(logp)
@@ -110,16 +95,16 @@ class VonMisesFisherMixture(VonMisesFisher):
         self.dataset_suffix += f"_n{self.args.n_mix:d}"
 
     def initialize_kappa(self):
-        self.kappa = torch.ones(self.args.n_mix) * self.args.kappa_mix
-        self.alpha = torch.ones(self.args.n_mix) * self.args.alpha_mix
+        self.kappa = torch.ones(self.args.n_mix, device=self.args.device) * self.args.kappa_mix
+        self.alpha = torch.ones(self.args.n_mix, device=self.args.device) * self.args.alpha_mix
 
     def initialize_mu(self):
-        mu = torch.randn([self.args.n_mix, self.args.datadim])
+        mu = torch.randn([self.args.n_mix, self.args.datadim], device=self.args.device)
         mu /= torch.norm(mu, dim=1).reshape(-1, 1)
         self.mu = mu
 
     def initialize_vMF(self):
-        self.vMF = MixvMF(x_dim=self.args.datadim, order=self.args.n_mix)
+        self.vMF = MixvMF(x_dim=self.args.datadim, order=self.args.n_mix).to(device=self.args.device)
         self.vMF.set_params(alpha=self.alpha, mus=self.mu, kappas=self.kappa)
 
 
@@ -133,8 +118,8 @@ class VonMisesFisherMixtureSpiral(VonMisesFisherMixture):
 
     def generate_spiral_on_sphere(self):
         # Generate parametric values
-        theta = torch.linspace(0, 2 * np.pi * self.args.n_turns_spiral, self.args.n_mix)
-        phi = torch.linspace(0, np.pi, self.args.n_mix)
+        theta = torch.linspace(0, 2 * np.pi * self.args.n_turns_spiral, self.args.n_mix, device=self.args.device)
+        phi = torch.linspace(0, np.pi, self.args.n_mix, device=self.args.device)
 
         # Parametric equations for a spherical spiral
         x = torch.sin(phi) * torch.cos(theta)
@@ -151,13 +136,13 @@ class Uniform(Dataset):
         self.compute_log_surface()
 
     def sample(self, n_samples):
-        samples = torch.randn([n_samples, self.args.datadim])
+        samples = torch.randn([n_samples, self.args.datadim], device=self.args.device)
         samples /= torch.norm(samples, dim=1).reshape(-1, 1)
 
         return samples * self.args.radius
 
     def log_density(self, points):
-        logp = torch.ones(points.shape[0])
+        logp = torch.ones(points.shape[0], device=self.args.device)
         norm_const = - self.log_surface_area
 
         return logp * norm_const
@@ -182,7 +167,7 @@ class UniformCheckerboard(Uniform):
 
     def sample(self, n_samples):
         # samples 3 times as much points to make sure at least 1/3 fall within the mask
-        samples = torch.randn([n_samples * 3, self.args.datadim])
+        samples = torch.randn([n_samples * 3, self.args.datadim], device=self.args.device)
         samples /= torch.norm(samples, dim=1).reshape(-1, 1)
         mask = self.checkerboard_mask(samples)
         samples = samples[mask]
@@ -192,7 +177,7 @@ class UniformCheckerboard(Uniform):
         return samples[:n_samples]
 
     def log_density(self, points):
-        logp = torch.ones(points.shape[0]) * -10
+        logp = torch.ones(points.shape[0], device=self.args.device) * -10
         mask = self.checkerboard_mask(points)
         logp[mask] = -self.log_surface_area
 
@@ -236,15 +221,19 @@ class LpUniform(Uniform):
     def sample(self, n_samples):
         samples = self.sample_gen_norm(x=self.args.datadim * n_samples, alpha=self.alpha, beta=self.args.beta, mu=0)
         samples = np.array(samples)
+        # breakpoint()
         samples = samples.reshape((n_samples, self.args.datadim))
         samples_norm = self.lp_norm(samples, p=self.args.beta) * self.args.radius
 
-        return torch.from_numpy(samples_norm).float()
+
+        return torch.from_numpy(samples_norm).float().to(device=self.args.device)
 
     def lp_norm(self, arr, p):
-        norm = np.sum(np.power(np.abs(arr), p), 1)
-        norm = np.power(norm, 1 / p).reshape(-1, 1)
-        return arr / norm
+        norm_stable = sp.linalg.norm(arr, ord=p, axis=1, keepdims=True)
+        # norm = np.sum(np.power(np.abs(arr), p), 1)
+        # norm = np.power(norm, 1 / p).reshape(-1, 1)
+        # breakpoint()
+        return arr / norm_stable
 
 
 def create_dataset(args):

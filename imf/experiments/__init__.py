@@ -5,19 +5,20 @@ from imf.experiments.datasets import (
     Uniform,
     UniformCheckerboard
 )
+
 from imf.experiments.datasets import create_dataset
 
 from imf.experiments.utils_manifold import (
     spherical_to_cartesian_torch,
     cartesian_to_spherical_torch,
     logabsdet_sph_to_car,
-    build_flow_manifold,
-    train_model,
+    train_model_forward,
     generate_samples,
     evaluate_flow_rnf,
     evaluate_samples,
     rnf_forward_logp,
-    rnf_forward_points
+    rnf_forward_points,
+    define_model_name
 )
 
 from imf.experiments.plots import (
@@ -30,8 +31,11 @@ from imf.experiments.plots import (
     density_flow,
     density_rnf,
     plot_logp,
-    plot_samples_ax
+    plot_samples_ax,
+    plot_pairwise_angle_distribution,
+    plot_angle_distribution
 )
+
 from imf.experiments.vonmises_fisher import (
     norm,
     vMFLogPartition,

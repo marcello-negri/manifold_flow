@@ -444,7 +444,7 @@ def build_flow_manifold_circular_(flow_dim, n_layers=3, hidden_features=256, dev
     return base_dist, transformation_layers
 
 
-def train_model_forward(model, data, args, batch_size=800, context=None, alternating=False, early_stopping=False, device="cuda", **kwargs):
+def train_model_forward(model, data, args, batch_size=8000, context=None, alternating=False, early_stopping=False, device="cuda", **kwargs):
     # optimizer = torch.optim.Adam([{'params':model.parameters()}, {'params':log_sigma, 'lr':1e-2}], lr=lr)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
@@ -540,33 +540,40 @@ def train_model_forward(model, data, args, batch_size=800, context=None, alterna
 
     return model, np.array(loss)
 
-def train_model_reverse(model,args, batch_size=1000, context=None, **kwargs):
+def train_model_reverse(model, args, dataset, batch_size=10_000, context=None, **kwargs):
     # optimizer = torch.optim.Adam([{'params':model.parameters()}, {'params':log_sigma, 'lr':1e-2}], lr=lr)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs)
+
+    num_iter = args.epochs // args.iter_per_cool_step
+    cooling_function = gen_cooling_schedule(T0=args.T0, Tn=args.Tn, num_iter=num_iter - 1, scheme='exp_mult')
 
     loss = []
     try:
         start_time = time.monotonic()
         model.train()
         for epoch in range(args.epochs):
-            # T = cooling_function(epoch // (args.epochs / num_iter))
+            T = cooling_function(epoch // (args.epochs / num_iter))
 
             optimizer.zero_grad()
             samples, logprob_flow = model.sample_and_log_prob(num_samples=batch_size, context=None)
-            # logprob_target = -torch.ones_like(logprob_flow)*np.log(np.sqrt(3)*4) # uniform on lp manifold
+            logprob_target = dataset.log_density(samples) # uniform on lp manifold
 
-            kl_div = torch.mean(logprob_flow)# - logprob_target)
+            kl_div = torch.mean(logprob_flow - logprob_target/T)
             kl_div.backward()
+            # torch.nn.utils.clip_grad_value_(model.parameters(), 1e-4)
+            # torch.nn.utils.clip_grad_norm_(model.parameters(), 1e-4)
             optimizer.step()
 
             kl_div_ = kl_div.cpu().detach().numpy()
             loss.append(kl_div_)
             # print(f"Training loss at step {epoch}: {loss[-1]:.1f} and {loss_T[-1]:.1f} * (T = {T:.3f})")
-            print(f"Training loss at step {epoch}: {loss[-1]:.3f}")
-            print(f"logprob_flow: {logprob_flow.mean().cpu().detach().numpy():.3f} ")
+            print(f"Training loss at step {epoch} (T={T:.2f}): {loss[-1]:.3f}")
+            # print(f"logprob_flow: {logprob_flow.mean().cpu().detach().numpy():.3f} ")
                   # f"logprob_target: {logprob_target.mean().cpu().detach().numpy():.3f}")
+            # if epoch % 20 ==0:
+            #     scheduler.step()
 
     except KeyboardInterrupt:
         print("interrupted..")
@@ -582,6 +589,24 @@ def train_model_reverse(model,args, batch_size=1000, context=None, **kwargs):
 
     return model, np.array(loss)
 
+def gen_cooling_schedule(T0, Tn, num_iter, scheme):
+    def cooling_schedule(t):
+        if t < num_iter:
+            k = t / num_iter
+            if scheme == 'exp_mult':
+                alpha = Tn / T0
+                return T0 * (alpha ** k)
+            #elif scheme == 'log_mult':
+            #    return T0 / (1 + alpha * math.log(1 + k))
+            elif scheme == 'lin_mult':
+                alpha = (T0 / Tn - 1)
+                return T0 / (1 + alpha * k)
+            elif scheme == 'quad_mult':
+                alpha = (T0 / Tn - 1)
+                return T0 / (1 + alpha * (k ** 2))
+        else:
+            return Tn
+    return cooling_schedule
 
 def generate_samples (model, sample_size=100, n_iter=1000):
     samples, log_probs = [], []

@@ -271,7 +271,7 @@ class MixvMF(nn.Module):
 
             cids = torch.multinomial(alpha, N, replacement=True)
 
-            samples = torch.zeros(N, self.x_dim)
+            samples = torch.zeros(N, self.x_dim, device=cids.device)
             for c in range(self.order):
                 Nc = (cids == c).sum()
                 if Nc > 0:
