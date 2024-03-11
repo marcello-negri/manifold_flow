@@ -22,7 +22,7 @@ parser.add_argument('--seed', metavar='s', type=int, default=1234, help='random 
 parser.add_argument("--overwrite", action="store_true", help="re-train and overwrite flow model")
 parser.add_argument("--n_layers", metavar='nl', type=int, default=10, help='number of layers in the flow model')
 parser.add_argument("--n_hidden_features", metavar='nf', type=int, default=256, help='number of hidden features in the embedding space of the flow model')
-parser.add_argument("--logabs_jacobian", type=str, default="analytical", choices=["analytical", "cholesky"])
+parser.add_argument("--logabs_jacobian", type=str, default="analytical", choices=["analytical_sm", "analytical_lu", "cholesky"])
 parser.add_argument("--architecture", type=str, default="circular", choices=["circular", "ambient", "unbounded", "unbounded_circular"])
 parser.add_argument("--device", type=str, default="cuda", help='device for training the model')
 parser.add_argument("--learn_manifold", action="store_true", help="learn the manifold together with the density")

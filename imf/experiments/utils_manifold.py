@@ -6,23 +6,6 @@ import tqdm
 from datetime import timedelta
 from torch.utils.data import Dataset
 
-from normflows.flows.neural_spline.wrapper import CircularAutoregressiveRationalQuadraticSpline, CircularCoupledRationalQuadraticSpline
-
-from enflows.transforms import Sigmoid
-from enflows.distributions import StandardNormal, Uniform
-from enflows.transforms import MaskedSumOfSigmoidsTransform
-from enflows.transforms.normalization import ActNorm
-from enflows.transforms.permutations import RandomPermutation
-from enflows.transforms.base import CompositeTransform, InverseTransform
-from enflows.nn.nets import Sin
-from enflows.flows.base import Flow
-from enflows.transforms.lipschitz import LipschitzDenseNetBuilder, iResBlock
-from enflows.transforms.injective import ConstrainedAnglesSigmoid, ClampedAngles, ClampedTheta, LearnableManifoldFlow, SphereFlow, LpManifoldFlow, ScaleLastDim
-from enflows.transforms.linear import ScalarScale, ScalarShift
-from enflows.transforms.orthogonal import HouseholderSequence
-from enflows.transforms.svd import SVDLinear
-
-
 import logging
 logger = logging.getLogger(__name__)
 
@@ -33,7 +16,7 @@ def define_model_name(args, dataset):
 def spherical_to_cartesian_torch(arr):
     # meant for batches of vectors, i.e. arr.shape = (mb, n)
 
-    assert arr.shape[1] >= 2
+    assert arr.shape[1] > 2
     r = arr[:, :1]
     angles = arr[:, 1:]
 
@@ -44,11 +27,10 @@ def spherical_to_cartesian_torch(arr):
 
     return torch.cat((x1, xs, xn), dim=1)
 
-
 def cartesian_to_spherical_torch(arr):
     # meant for batches of vectors, i.e. arr.shape = (mb, n)
     eps = 1e-5
-    assert arr.shape[-1] >= 2
+    assert arr.shape[-1] > 2
     radius = torch.linalg.norm(arr, dim=-1)
     flipped_cumsum = torch.cumsum(torch.flip(arr ** 2, dims=(-1,)), dim=-1)
     sqrt_sums = torch.flip(torch.sqrt(flipped_cumsum + eps), dims=(-1,))[..., :-1]
@@ -72,379 +54,28 @@ def logabsdet_sph_to_car(arr):
 
     return logabsdet_r + logabsdet_sin
 
-
-
-
-def build_flow_reverse(args, clamp_theta=False):
-    params = dict(flow_dim=args.datadim, n_layers=args.n_layers, hidden_features=args.n_hidden_features, device=args.device)
-    if args.architecture == 'circular':
-        base_dist, transformation_layers = build_flow_manifold_circular_(**params)
-    elif args.architecture == 'unbounded':
-        base_dist, transformation_layers = build_flow_manifold_unbounded(**params)
-    elif args.architecture == 'unbounded_circular':
-        base_dist, transformation_layers = build_flow_manifold_unbounded_circular(**params)
-    elif args.architecture == 'ambient':
-        base_dist, transformation_layers = build_flow_manifold_ambient(**params)
-        transformation_layers = transformation_layers[::-1]
-        transform = CompositeTransform(transformation_layers)
-        flow = Flow(transform, base_dist).to(args.device)
-        return flow
-    else:
-        raise ValueError(f'type {type} is not supported')
-
-    if clamp_theta:
-        transformation_layers.append(
-            InverseTransform(
-                ClampedTheta(eps=1e-3)
-            )
-        )
-
-    if args.learn_manifold:
-        manifold_mapping = LearnableManifoldFlow(n=args.datadim - 1, max_radius=2.,
-                                                 logabs_jacobian=args.logabs_jacobian, num_hutchinson_samples=4)
-    else:
-        manifold_mapping = LpManifoldFlow(norm=1., p=1.)
-        manifold_mapping = SphereFlow(n=args.datadim - 1, r=1.,
-                                      logabs_jacobian=args.logabs_jacobian, num_hutchinson_samples=4)
-
-    transformation_layers.append(
-        InverseTransform(
-            manifold_mapping
-        )
-    )
-
-    transformation_layers = transformation_layers[::-1]
-    transform = CompositeTransform(transformation_layers)
-
-    # combine into a flow
-    flow = Flow(transform, base_dist).to(args.device)
-
-    return flow
-
-def build_flow_manifold_unbounded_circular(flow_dim, n_layers=3, hidden_features=256, device='cuda'):
-    base_dist = StandardNormal(shape=[flow_dim - 1])
-    torch_one = torch.ones(1).to(device)
-    # Define an invertible transformation
-    transformation_layers = []
-
-    densenet_builder = LipschitzDenseNetBuilder(input_channels=flow_dim-1, densenet_depth=3, activation_function=Sin(w0=1), lip_coeff=.97,)
-
-    for _ in range(n_layers):
-        transformation_layers.append(RandomPermutation(features=flow_dim-1))
-
-        # transformation_layers.append(
-        #     InverseTransform(
-        #         SVDLinear(features= flow_dim - 1, num_householder=4)
-        #     )
-        # )
-
-        # transformation_layers.append(
-        #     InverseTransform(
-        #         MaskedSumOfSigmoidsTransform(features=flow_dim - 1, hidden_features=hidden_features, num_blocks=3,
-        #                                      n_sigmoids=30)
-        #     )
-        # )
-
-        transformation_layers.append(
-            InverseTransform(
-                iResBlock(densenet_builder.build_network(), brute_force=True)
-            )
-        )
-
-        transformation_layers.append(
-            InverseTransform(
-                ActNorm(features=flow_dim - 1)
-            )
-        )
-
-
-    # transformation_layers.append(
-    #    InverseTransform(
-    #            CompositeTransform([
-    #                ScalarShift(shift=np.pi, trainable=False),
-    #                ScalarScale(scale=0.5, trainable=False)])
-    #        )
-    # )
-
-    # transformation_layers.append(
-    #     InverseTransform(
-    #         ScaleLastDim()
-    #     )
-    # )
-
-    # transformation_layers.append(
-    #    InverseTransform(
-    #            CompositeTransform([
-    #                ScalarShift(shift=np.pi, trainable=False),
-    #                ScalarScale(scale=0.5, trainable=False)])
-    #        )
-    # )
-
-    # transformation_layers.append(
-    #     InverseTransform(
-    #         ConstrainedAnglesSigmoid(temperature=1, learn_temperature=True)
-    #     )
-    # )
-
-    transformation_layers.append(
-       InverseTransform(
-               CompositeTransform([
-                   Sigmoid(),
-                   ScalarScale(scale=2, trainable=False),
-                   ScalarShift(shift=-1, trainable=False)])
-           )
-    )
-
-    # transformation_layers.append(
-    #    InverseTransform(
-    #            CompositeTransform([
-    #                ScalarScale(scale=2, trainable=False),
-    #                ScalarShift(shift=-np.pi, trainable=False)])
-    #        )
-    # )
-    #
-    for i in range(10):
-        transformation_layers.append(
-            InverseTransform(
-                CircularAutoregressiveRationalQuadraticSpline(num_input_channels=flow_dim - 1,
-                                                              num_hidden_channels=hidden_features,
-                                                              num_blocks=1, num_bins=10, tail_bound=1,
-                                                              ind_circ=[i for i in range(flow_dim - 1)])
-            )
-        )
-
-    transformation_layers.append(
-        InverseTransform(
-            CompositeTransform([
-                ScalarShift(shift=1., trainable=False),
-                ScalarScale(scale=0.5*np.pi, trainable=False)])
-        )
-    )
-
-    transformation_layers.append(
-        InverseTransform(
-            ScaleLastDim()
-        )
-    )
-
-    return base_dist, transformation_layers
-
-def build_flow_manifold_unbounded(flow_dim, n_layers=3, hidden_features=256, device='cuda'):
-    base_dist = StandardNormal(shape=[flow_dim - 1])
-    # Define an invertible transformation
-    transformation_layers = []
-
-    densenet_builder = LipschitzDenseNetBuilder(input_channels=flow_dim-1, densenet_depth=3, activation_function=Sin(w0=1), lip_coeff=.97,)
-
-    for _ in range(n_layers):
-        transformation_layers.append(RandomPermutation(features=flow_dim-1))
-
-        # transformation_layers.append(
-        #     InverseTransform(
-        #         SVDLinear(features= flow_dim - 1, num_householder=4)
-        #     )
-        # )
-
-        # transformation_layers.append(
-        #     InverseTransform(
-        #         MaskedSumOfSigmoidsTransform(features=flow_dim - 1, hidden_features=hidden_features, num_blocks=3,
-        #                                      n_sigmoids=30)
-        #     )
-        # )
-
-        transformation_layers.append(
-            InverseTransform(
-                iResBlock(densenet_builder.build_network(), brute_force=True)
-            )
-        )
-
-        transformation_layers.append(
-            InverseTransform(
-                ActNorm(features=flow_dim - 1)
-            )
-        )
-
-    transformation_layers.append(
-        InverseTransform(
-            ConstrainedAnglesSigmoid(temperature=1, learn_temperature=True)
-        )
-    )
-
-    return base_dist, transformation_layers
-
-def build_flow_manifold_ambient(flow_dim, n_layers=3, hidden_features=256, device='cuda'):
-    base_dist = StandardNormal(shape=[flow_dim])
-    # Define an invertible transformation
-    transformation_layers = []
-
-    densenet_builder = LipschitzDenseNetBuilder(input_channels=flow_dim, densenet_depth=3, activation_function=Sin(w0=1), lip_coeff=.97,)
-
-    for _ in range(n_layers):
-        transformation_layers.append(RandomPermutation(features=flow_dim))
-
-        # transformation_layers.append(
-        #     InverseTransform(
-        #         SVDLinear(features= flow_dim - 1, num_householder=4)
-        #     )
-        # )
-
-        # transformation_layers.append(
-        #     InverseTransform(
-        #         MaskedSumOfSigmoidsTransform(features=flow_dim - 1, hidden_features=hidden_features, num_blocks=3,
-        #                                      n_sigmoids=30)
-        #     )
-        # )
-
-        transformation_layers.append(
-            InverseTransform(
-                iResBlock(densenet_builder.build_network(), brute_force=True)
-            )
-        )
-
-        transformation_layers.append(
-            InverseTransform(
-                ActNorm(features=flow_dim)
-            )
-        )
-
-    return base_dist, transformation_layers
-
-
-def build_flow_manifold_ambient_(flow_dim, n_layers=3, hidden_features=256, device='cuda'):
-    base_dist = StandardNormal(shape=[flow_dim])
-    # Define an invertible transformation
-    transformation_layers = []
-
-    densenet_builder = LipschitzDenseNetBuilder(input_channels=flow_dim, densenet_depth=3, activation_function=Sin(w0=1), lip_coeff=.97,)
-
-    for _ in range(n_layers):
-        transformation_layers.append(RandomPermutation(features=flow_dim))
-
-        # transformation_layers.append(
-        #     InverseTransform(
-        #         SVDLinear(features= flow_dim - 1, num_householder=4)
-        #     )
-        # )
-
-        transformation_layers.append(
-            # InverseTransform(
-                MaskedSumOfSigmoidsTransform(features=flow_dim, hidden_features=hidden_features, num_blocks=3,
-                                             n_sigmoids=30)
-            # )
-        )
-
-        # transformation_layers.append(
-        #     InverseTransform(
-        #         iResBlock(densenet_builder.build_network(), brute_force=True)
-        #     )
-        #
-        # )
-
-        transformation_layers.append(
-            ActNorm(features=flow_dim)
-        )
-
-    return base_dist, transformation_layers
-
-
-def build_flow_manifold_circular(flow_dim, n_layers=3, hidden_features=256, device='cuda'):
-    # torch_pi = torch.tensor(np.pi).to(device)
-    torch_one = torch.ones(1).to(device)
-    # base_dist = Uniform(shape=[flow_dim - 1], low=-torch_pi, high=torch_pi)
-    base_dist = Uniform(shape=[flow_dim - 1], low=-torch_one, high=torch_one)
-
-    # Define an invertible transformation
-    transformation_layers = []
-
-    transformation_layers.append(
-        ScaleLastDim(scale=0.5)
-    )
-
-    transformation_layers.append(
-        CompositeTransform([
-            # ScalarShift(shift=np.pi, trainable=False),
-            ScalarScale(scale= 2./np.pi, trainable=False),
-            ScalarShift(shift=-1., trainable=False),
-            # ScalarScale(scale=0.5, trainable=False)])
-        ])
-    )
-
-    for _ in range(n_layers):
-        # transformation_layers.append(RandomPermutation(features=flow_dim - 1))
-        transformation_layers.append(
-            InverseTransform(
-                CircularAutoregressiveRationalQuadraticSpline(num_input_channels=flow_dim - 1,
-                                                              num_hidden_channels=hidden_features,
-                                                              # num_blocks=2, num_bins=30, tail_bound=np.pi,
-                                                              num_blocks=3, num_bins=10, tail_bound=1,
-                                                              ind_circ=[i for i in range(flow_dim - 1)])
-            )
-        )
-        # transformation_layers.append(RandomPermutation(features=flow_dim - 1))
-        transformation_layers.append(
-            InverseTransform(
-                CircularCoupledRationalQuadraticSpline(num_input_channels=flow_dim - 1,
-                                                      num_hidden_channels=hidden_features,
-                                                      num_blocks=2, num_bins=5, tail_bound=1,
-                                                      ind_circ=[i for i in range(flow_dim - 1)])
-            )
-        )
-
-    return base_dist, transformation_layers
-
-def build_flow_manifold_circular_(flow_dim, n_layers=3, hidden_features=256, device='cuda'):
-    # torch_pi = torch.tensor(np.pi).to(device)
-    torch_one = torch.ones(1).to(device)
-    # base_dist = Uniform(shape=[flow_dim - 1], low=-torch_pi, high=torch_pi)
-    base_dist = Uniform(shape=[flow_dim - 1], low=-torch_one, high=torch_one)
-
-    # Define an invertible transformation
-    transformation_layers = []
-
-    for _ in range(n_layers):
-        # transformation_layers.append(RandomPermutation(features=flow_dim - 1))
-        # transformation_layers.append(
-        #     # InverseTransform(
-        #         CircularAutoregressiveRationalQuadraticSpline(num_input_channels=flow_dim - 1,
-        #                                                       num_hidden_channels=hidden_features,
-        #                                                       # num_blocks=2, num_bins=30, tail_bound=np.pi,
-        #                                                       num_blocks=3, num_bins=10, tail_bound=1,
-        #                                                       ind_circ=[i for i in range(flow_dim - 1)])
-        #     # )
-        #
-        # )
-        transformation_layers.append(RandomPermutation(features=flow_dim - 1))
-        transformation_layers.append(
-            # InverseTransform(
-                CircularCoupledRationalQuadraticSpline(num_input_channels=flow_dim - 1,
-                                                      num_hidden_channels=hidden_features,
-                                                      num_blocks=3, num_bins=10, tail_bound=np.pi,
-                                                      ind_circ=[i for i in range(flow_dim - 1)])
-            # )
-        )
-
-
-
-    transformation_layers.append(
-        InverseTransform(
-            CompositeTransform([
-                ScalarShift(shift=1., trainable=False),
-                ScalarScale(scale=0.5 * np.pi, trainable=False),
-            ])
-        )
-
-    )
-
-    transformation_layers.append(
-        InverseTransform(
-            ScaleLastDim(scale=2)
-        )
-    )
-
-    return base_dist, transformation_layers
-
-
-def train_model_forward(model, data, args, batch_size=8000, context=None, alternating=False, early_stopping=False, device="cuda", **kwargs):
+def gen_cooling_schedule(T0, Tn, num_iter, scheme):
+    def cooling_schedule(t):
+        if t < num_iter:
+            k = t / num_iter
+            if scheme == 'exp_mult':
+                alpha = Tn / T0
+                return T0 * (alpha ** k)
+            #elif scheme == 'log_mult':
+            #    return T0 / (1 + alpha * math.log(1 + k))
+            elif scheme == 'lin_mult':
+                alpha = (T0 / Tn - 1)
+                return T0 / (1 + alpha * k)
+            elif scheme == 'quad_mult':
+                alpha = (T0 / Tn - 1)
+                return T0 / (1 + alpha * (k ** 2))
+        else:
+            return Tn
+    return cooling_schedule
+
+
+
+def train_model_forward(model, data, args, batch_size=1, context=None, alternating=False, early_stopping=False, device="cuda", **kwargs):
     # optimizer = torch.optim.Adam([{'params':model.parameters()}, {'params':log_sigma, 'lr':1e-2}], lr=lr)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
@@ -477,7 +108,6 @@ def train_model_forward(model, data, args, batch_size=8000, context=None, altern
                 # log_prob_ = model._distribution.log_prob(data_base_, context)
                 # data_manifold_, logabsdet_ = model._transform.inverse(data_base_, context)
                 # log_prob_ = log_prob_ - logabsdet_
-
                 log_prob = model.log_prob(data_manifold, context=context)
 
                 # q_samples, q_log_prob = model.sample_and_log_prob(num_samples=sample_size)
@@ -540,7 +170,9 @@ def train_model_forward(model, data, args, batch_size=8000, context=None, altern
 
     return model, np.array(loss)
 
-def train_model_reverse(model, args, dataset, batch_size=10_000, context=None, **kwargs):
+def train_model_reverse(model, args, dataset, train_data_np, batch_size=100_000, context=None, **kwargs):
+    from imf.experiments.plots import plot_angle_distribution, plot_samples_pca
+
     # optimizer = torch.optim.Adam([{'params':model.parameters()}, {'params':log_sigma, 'lr':1e-2}], lr=lr)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
@@ -562,6 +194,17 @@ def train_model_reverse(model, args, dataset, batch_size=10_000, context=None, *
 
             kl_div = torch.mean(logprob_flow - logprob_target/T)
             kl_div.backward()
+
+
+            if epoch > 0:
+                T_old = cooling_function((epoch - 1) // (args.epochs / num_iter))
+                if T != T_old:
+                    samples_np = samples.detach().cpu().numpy()
+                    plot_angle_distribution(samples_flow=samples_np, samples_gt=train_data_np, device=args.device,
+                                            filename=f"./plots/{args.model_name.split('/')[-1]}_angles_T{T:.2f}.png")
+                    plot_samples_pca(samples_np, train_data_np,
+                                     filename=f"./plots/{args.model_name.split('/')[-1]}_angles_pca_T{T:.2f}.png")
+
             # torch.nn.utils.clip_grad_value_(model.parameters(), 1e-4)
             # torch.nn.utils.clip_grad_norm_(model.parameters(), 1e-4)
             optimizer.step()
@@ -589,35 +232,96 @@ def train_model_reverse(model, args, dataset, batch_size=10_000, context=None, *
 
     return model, np.array(loss)
 
-def gen_cooling_schedule(T0, Tn, num_iter, scheme):
-    def cooling_schedule(t):
-        if t < num_iter:
-            k = t / num_iter
-            if scheme == 'exp_mult':
-                alpha = Tn / T0
-                return T0 * (alpha ** k)
-            #elif scheme == 'log_mult':
-            #    return T0 / (1 + alpha * math.log(1 + k))
-            elif scheme == 'lin_mult':
-                alpha = (T0 / Tn - 1)
-                return T0 / (1 + alpha * k)
-            elif scheme == 'quad_mult':
-                alpha = (T0 / Tn - 1)
-                return T0 / (1 + alpha * (k ** 2))
-        else:
-            return Tn
-    return cooling_schedule
 
-def generate_samples (model, sample_size=100, n_iter=1000):
-    samples, log_probs = [], []
+def train_regression_cond(model, log_unnorm_posterior, args, manifold, **kwargs):
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+
+    # set up cooling schedule
+    num_iter = args.epochs // args.iter_per_cool_step
+    cooling_function = gen_cooling_schedule(T0=args.T0, Tn=args.Tn, num_iter=num_iter - 1, scheme='exp_mult')
+
+    loss, loss_T = [], []
+    try:
+        start_time = time.monotonic()
+        for epoch in range(args.epochs):
+            T = cooling_function(epoch // (args.epochs / num_iter))
+            optimizer.zero_grad()
+
+            rand_cond = torch.rand(args.n_context_samples, device=args.device)
+            uniform_cond = (rand_cond * (args.cond_max - args.cond_min) + args.cond_min).view(-1, 1)
+
+            samples, log_prob = model.sample_and_log_prob(num_samples=args.n_samples, context=uniform_cond)
+            if torch.any(torch.isnan(samples)): breakpoint()
+
+            if manifold:
+                log_posterior = log_unnorm_posterior(beta=samples)
+            else:
+                log_posterior = log_unnorm_posterior(beta=samples, cond=uniform_cond)
+            # log_posterior = log_unnorm_posterior(beta=q_samples, X=X, y=y, sigma=sigma, lamb=uniform_lambda, q=q_tensor, act=act)
+            # log_posterior = log_logistic_posterior(beta=q_samples, X=X, y=y, lamb=uniform_lambda, q=q_tensor, act=act)
+            kl_div = torch.mean(log_prob - log_posterior / T)
+            kl_div.backward()
+
+            # torch.nn.utils.clip_grad_norm_(model.parameters(), .1)
+            optimizer.step()
+
+            loss.append(torch.mean(log_prob - log_posterior).cpu().detach().numpy())
+            loss_T.append(torch.mean(log_prob - log_posterior / T).cpu().detach().numpy())
+            print(f"Training loss at step {epoch}: {loss[-1]:.1f} and {loss_T[-1]:.1f} * (T = {T:.3f})")
+
+    except KeyboardInterrupt:
+        print("interrupted..")
+
+    end_time = time.monotonic()
+    time_diff = timedelta(seconds=end_time - start_time)
+    print(f"Training took {time_diff} seconds")
+
+    return model, loss, loss_T
+
+
+# def generate_samples (model, sample_size=100, n_iter=1000):
+#     samples, log_probs = [], []
+#     for _ in tqdm.tqdm(range(n_iter)):
+#         posterior_samples, log_probs_samples = model.sample_and_log_prob(sample_size)
+#         samples.append(posterior_samples.cpu().detach().numpy())
+#         log_probs.append(log_probs_samples.cpu().detach().numpy())
+#     samples = np.concatenate(samples, 0)
+#     log_probs = np.concatenate(log_probs, 0)
+#
+#     return samples, log_probs
+
+def generate_samples (model, args, cond=False, log_unnorm_posterior=None, manifold=True, context_size=10, sample_size=100, n_iter=1000):
+    samples_list, log_probs_list, kl_list, cond_list = [], [], [], []
     for _ in tqdm.tqdm(range(n_iter)):
-        posterior_samples, log_probs_samples = model.sample_and_log_prob(sample_size)
-        samples.append(posterior_samples.cpu().detach().numpy())
-        log_probs.append(log_probs_samples.cpu().detach().numpy())
-    samples = np.concatenate(samples, 0)
-    log_probs = np.concatenate(log_probs, 0)
+        if cond and log_unnorm_posterior is not None:
+            rand_cond = torch.rand(context_size, device=args.device)
+            uniform_cond = (rand_cond * (args.cond_max - args.cond_min) + args.cond_min).view(-1, 1)
+            posterior_samples, log_probs_samples = model.sample_and_log_prob(sample_size, context=uniform_cond)
+            if manifold:
+                log_lik = log_unnorm_posterior(beta=posterior_samples)
+            else:
+                log_lik = log_unnorm_posterior(beta=posterior_samples, cond=uniform_cond)
+            kl_div = log_probs_samples - log_lik
+            kl_list.append(kl_div.detach().cpu().numpy())
+            if args.log_cond: uniform_cond = 10 ** uniform_cond
+            cond_list.append(uniform_cond.view(-1).cpu().detach().numpy())
+        else:
+            posterior_samples, log_probs_samples = model.sample_and_log_prob(sample_size)
 
-    return samples, log_probs
+        samples_list.append(posterior_samples.detach().cpu().numpy())
+        log_probs_list.append(log_probs_samples.detach().cpu().numpy())
+
+    samples_list = np.concatenate(samples_list, 0)
+    log_probs_list = np.concatenate(log_probs_list, 0)
+
+    if cond and log_unnorm_posterior is not None:
+        cond_list = np.concatenate(cond_list, 0)
+        kl_list = np.concatenate(kl_list, 0)
+        cond_sorted_idx = cond_list.argsort()
+        return samples_list[cond_sorted_idx], cond_list[cond_sorted_idx], kl_list[cond_sorted_idx]
+    else:
+        return samples_list, log_probs_list
+
 
 def evaluate_flow_rnf(test_data, simulator, flow, rnf, device='cuda'):
     test_data_torch = torch.from_numpy(test_data).float().to(device)

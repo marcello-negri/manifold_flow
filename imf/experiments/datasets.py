@@ -253,3 +253,65 @@ def create_dataset(args):
         raise ValueError('Dataset {} not recognized'.format(args.dataset))
 
     return dataset
+
+from sklearn.linear_model import LinearRegression, Lasso, Ridge
+from sklearn.datasets import load_diabetes
+from sklearn.preprocessing import StandardScaler
+
+def load_diabetes_dataset(device='cuda'):
+    df = load_diabetes()
+    scaler = StandardScaler()
+    X_np = scaler.fit_transform(df.data)
+    y_np = scaler.fit_transform(df.target.reshape(-1, 1))[:, 0]
+    X_tensor = torch.from_numpy(X_np).float().to(device)
+    y_tensor = torch.from_numpy(y_np).float().to(device)
+
+    # compute regression parameters
+    reg = LinearRegression().fit(X_np, y_np)
+    r2_score = reg.score(X_np, y_np)
+    print(f"R^2 score: {r2_score:.4f}")
+    sigma_regr = np.sqrt(np.mean(np.square(y_np - X_np @ reg.coef_)))
+    print(f"Sigma regression: {sigma_regr:.4f}")
+    print(f"Norm coefficients: {np.linalg.norm(reg.coef_):.4f}")
+
+    return X_tensor, y_tensor, X_np, y_np
+
+
+# def generate_regression_dataset(n_samples, n_features, noise_std=0.1):
+#     # Generate random feature matrix X and regression parameters beta
+#     X = np.random.randn(n_samples, n_features)
+#     true_beta = np.random.randn(n_features)
+#
+#     # Generate target variable y with noise
+#     y = np.dot(X, true_beta) + noise_std * np.random.randn(n_samples)
+#
+#     return X, y, true_beta
+
+
+def generate_regression_dataset(n_samples, n_features, n_non_zero, noise_std):
+    assert n_features > n_non_zero
+
+    # Generate non-zero coefficients randomly
+    non_zero_indices = np.random.choice(n_features, n_non_zero, replace=False)
+    coefficients = np.zeros(n_features)
+    coefficients[non_zero_indices] = np.random.normal(0, 1, n_non_zero)  # Random non-zero coefficients
+
+    # Generate data matrix X from a Gaussian distribution with covariance matrix sampled from a Wishart distribution
+    scale_matrix = np.eye(n_features)  # Identity matrix as the scale matrix
+    covariance = sp.stats.wishart(df=n_features, scale=scale_matrix).rvs(1)
+
+    # Sample data matrix X from a multivariate Gaussian distribution with zero mean and covariance matrix
+    X = np.random.multivariate_normal(mean=np.zeros(n_features), cov=covariance, size=n_samples)
+
+    # Generate response variable y
+    y = np.dot(X, coefficients) + np.random.normal(0, noise_std**2, n_samples)  # Linear regression model with Gaussian noise
+
+    # compute regression parameters
+    reg = LinearRegression().fit(X, y)
+    r2_score = reg.score(X, y)
+    print(f"R^2 score: {r2_score:.4f}")
+    sigma_regr = np.sqrt(np.mean(np.square(y - X @ reg.coef_)))
+    print(f"Sigma regression: {sigma_regr:.4f}")
+    print(f"Norm coefficients: {np.linalg.norm(reg.coef_):.4f}")
+
+    return X, y, coefficients

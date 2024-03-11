@@ -6,7 +6,7 @@ from imf.experiments.datasets import (
     UniformCheckerboard
 )
 
-from imf.experiments.datasets import create_dataset
+from imf.experiments.datasets import create_dataset, load_diabetes_dataset
 
 from imf.experiments.utils_manifold import (
     spherical_to_cartesian_torch,

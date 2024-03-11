@@ -25,7 +25,7 @@ n_samples = 1000
 optimal_r = []
 for n_dim in tqdm.tqdm(d_list):
     logabsdet_pd = []
-    for sampler in ["uniform_sphere"]:#"gaussian", "uniform", ]:
+    for sampler in ["uniform_sphere"]:#"gaussian", "uniform"]:
         if sampler == "uniform":
             theta = torch.rand((n_samples, n_dim-1)) * np.pi
             theta[:,-1] *= 2
