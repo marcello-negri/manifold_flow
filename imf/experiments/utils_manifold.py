@@ -248,6 +248,10 @@ def train_regression_cond(model, log_unnorm_posterior, args, manifold, **kwargs)
             optimizer.zero_grad()
 
             rand_cond = torch.rand(args.n_context_samples, device=args.device)
+            # alpha = min(epoch/(args.epochs-200), 1.)
+            # uniform_cond = (args.cond_max - rand_cond * alpha * (args.cond_max-args.cond_min)).view(-1, 1)
+            # print(uniform_cond.min().item(), uniform_cond.max().item())
+
             uniform_cond = (rand_cond * (args.cond_max - args.cond_min) + args.cond_min).view(-1, 1)
 
             samples, log_prob = model.sample_and_log_prob(num_samples=args.n_samples, context=uniform_cond)
@@ -257,12 +261,10 @@ def train_regression_cond(model, log_unnorm_posterior, args, manifold, **kwargs)
                 log_posterior = log_unnorm_posterior(beta=samples)
             else:
                 log_posterior = log_unnorm_posterior(beta=samples, cond=uniform_cond)
-            # log_posterior = log_unnorm_posterior(beta=q_samples, X=X, y=y, sigma=sigma, lamb=uniform_lambda, q=q_tensor, act=act)
-            # log_posterior = log_logistic_posterior(beta=q_samples, X=X, y=y, lamb=uniform_lambda, q=q_tensor, act=act)
+
             kl_div = torch.mean(log_prob - log_posterior / T)
             kl_div.backward()
 
-            # torch.nn.utils.clip_grad_norm_(model.parameters(), .1)
             optimizer.step()
 
             loss.append(torch.mean(log_prob - log_posterior).cpu().detach().numpy())
@@ -291,11 +293,16 @@ def train_regression_cond(model, log_unnorm_posterior, args, manifold, **kwargs)
 #     return samples, log_probs
 
 def generate_samples (model, args, cond=False, log_unnorm_posterior=None, manifold=True, context_size=10, sample_size=100, n_iter=1000):
+    it = 0
     samples_list, log_probs_list, kl_list, cond_list = [], [], [], []
     for _ in tqdm.tqdm(range(n_iter)):
+        # it = it + 1
         if cond and log_unnorm_posterior is not None:
             rand_cond = torch.rand(context_size, device=args.device)
             uniform_cond = (rand_cond * (args.cond_max - args.cond_min) + args.cond_min).view(-1, 1)
+            # if (args.cond_max < 1 and args.cond_min < 1):
+            #     factor = it / n_iter
+            #     uniform_cond = factor * uniform_cond + (1-factor)*1.0
             posterior_samples, log_probs_samples = model.sample_and_log_prob(sample_size, context=uniform_cond)
             if manifold:
                 log_lik = log_unnorm_posterior(beta=posterior_samples)

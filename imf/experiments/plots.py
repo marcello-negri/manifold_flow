@@ -461,26 +461,28 @@ def plot_betas_lambda(samples, lambdas, X_np, y_np, sigma, gt_only=False, min_bi
     if gt == 'linear_regression':
         if norm == 2:
             beta_path = np.array([Ridge(alpha=alpha, fit_intercept=False).fit(X_np, y_np).coef_
-                                     for alpha in tqdm.tqdm(lambdas * sigma.item()**2)])
+                                  for alpha in tqdm.tqdm(lambdas * sigma.item() ** 2)])
             alphas = lambdas
         else:
             alphas, beta_path, _ = lasso_path(X_np, y_np)
             beta_path = beta_path.T
         if gt_only:
-            plot_lines_gt(x_model=None, y_mean_model=None, y_l_model=None,y_r_model=None, x_gt=alphas, y_gt=beta_path,
+            plot_lines_gt(x_model=None, y_mean_model=None, y_l_model=None, y_r_model=None, x_gt=alphas, y_gt=beta_path,
                           dim=X_np.shape[-1], n_plots=n_plots, log_scale=True, norm=norm, true_coeff=true_coeff)
             norms_sorted, coeff_sorted = sort_path_by_norm(beta_path, norm=norm)
-            plot_lines_gt(x_model=None, y_mean_model=None, y_l_model=None, y_r_model=None, x_gt=norms_sorted,y_gt=coeff_sorted,
+            plot_lines_gt(x_model=None, y_mean_model=None, y_l_model=None, y_r_model=None, x_gt=norms_sorted,
+                          y_gt=coeff_sorted,
                           dim=X_np.shape[-1], n_plots=n_plots, log_scale=False, norm=norm, true_coeff=true_coeff)
 
             #     beta_path = np.array([Lasso(alpha=alpha, fit_intercept=False).fit(X_np, y_np).coef_
-        #                             for alpha in tqdm.tqdm(lambdas * sigma.item()**2 / X_np.shape[0])])
-        # coarse = 1
+            #                             for alpha in tqdm.tqdm(lambdas * sigma.item()**2 / X_np.shape[0])])
+            # coarse = 1
             return alphas
     elif gt == 'logistic_regression':
         coarse = lambdas.shape[0] // 50
-        beta_path = [LogisticRegression(penalty='l1', solver='liblinear', fit_intercept=False, C=1 / c).fit(X_np, y_np).coef_
-                        for c in tqdm.tqdm(lambdas[::coarse])]
+        beta_path = [
+            LogisticRegression(penalty='l1', solver='liblinear', fit_intercept=False, C=1 / c).fit(X_np, y_np).coef_
+            for c in tqdm.tqdm(lambdas[::coarse])]
         beta_path = np.array(beta_path).squeeze()
     else:
         raise ValueError("Ground truth path (gt) must be either 'linear_regression' or 'logistic_regression'")
@@ -520,6 +522,39 @@ def plot_betas_lambda(samples, lambdas, X_np, y_np, sigma, gt_only=False, min_bi
 
 
     return samples_norm, bin_l, bin_means, bin_r
+
+def plot_betas_lambda_fixed_norm(samples, lambdas, dim, conf=0.95, n_plots=1, true_coeff=None, log_scale=True):
+
+    sample_mean = samples.mean(1)
+    l_quant = np.quantile(samples, 1 - conf, axis=1)
+    r_quant = np.quantile(samples, conf, axis=1)
+
+    n_lines = dim // n_plots
+    clrs = sns.color_palette("husl", n_lines)
+    for i in range(n_plots):
+        fig, ax = plt.subplots(figsize=(14, 14))
+        with sns.axes_style("darkgrid"):
+            for j in range(i * n_lines, (i + 1) * n_lines):
+                if j == dim:
+                    break
+                color = clrs[j % n_lines]
+                ax.plot(lambdas, sample_mean[:, j], c=color, alpha=0.7, linewidth=1.5)
+                ax.fill_between(lambdas, l_quant[:, j], r_quant[:, j], alpha=0.2, facecolor=color)
+                # secax.plot(alphas, beta_path[:, j], linestyle='--', linewidth=1.5, c=color, alpha=0.7)
+                if true_coeff is not None:
+                    if true_coeff[j] != 0:
+                        print(true_coeff[j])
+                        ax.axhline(y=true_coeff[j], c=color, linestyle='dashed')
+            plt.xlabel(r"$\lambda$", fontsize=18)
+            # secax.set_xlabel('$\lambda_{LASSO}$')
+            plt.ylabel(r'$\beta$', fontsize=18)
+            plt.xticks(fontsize=12)
+            plt.yticks(fontsize=12)
+            if log_scale:
+                plt.xscale('log')
+            # plt.savefig(f"{name_file}_{j}.pdf", bbox_inches='tight')
+            plt.show()
+    breakpoint()
 
 # def plot_betas_lambda(samples, lambdas, X_np, y_np, sigma, n_bins=51, norm=1, a=0.95, n_plots=1, gt='linear_regression', folder_name='./'):
 #

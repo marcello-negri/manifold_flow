@@ -9,7 +9,7 @@ from functools import partial
 
 from imf.experiments.utils_manifold import train_regression_cond, generate_samples
 from imf.experiments.datasets import load_diabetes_dataset, generate_regression_dataset, generate_regression_dataset_positive_coeff
-from imf.experiments.architecture import build_cond_flow_reverse, build_cond_flow_l1_manifold
+from imf.experiments.architecture import build_cond_flow_reverse, build_cond_flow_l1_manifold, build_simple_cond_flow_l1_manifold, build_circular_cond_flow_l1_manifold
 from imf.experiments.plots import plot_betas_lambda_fixed_norm, plot_loss, plot_betas_lambda, plot_marginal_likelihood
 
 import logging
@@ -66,9 +66,9 @@ def gaussian_log_likelihood(beta: torch.Tensor, sigma: torch.Tensor, X: torch.Te
 
     return log_lk + log_lk_const
 
-def lp_norm_prior(beta: torch.Tensor, lamb: torch.Tensor, args):
-    if args.log_cond: lamb_ = 10 ** lamb
-    else: lamb_ = lamb
+def lp_norm_prior(beta: torch.Tensor, cond: torch.Tensor, args):
+    if args.log_cond: lamb_ = 10 ** cond
+    else: lamb_ = cond
 
     p = 0.5
 
@@ -81,19 +81,36 @@ def lp_norm_prior(beta: torch.Tensor, lamb: torch.Tensor, args):
 def dirichlet_prior(beta: torch.Tensor, alpha: torch.Tensor, args):
     if args.log_cond: alpha_ = 10 ** alpha
     else: alpha_ = alpha
+    # dim = beta.shape[-1]
+    # alpha_ = torch.ones_like(alpha) * 100
 
     K = beta.shape[-1]
     log_const = torch.lgamma(alpha_ * K) - K * torch.lgamma(alpha_)
-    log_prior = (alpha_ - 1) * torch.log(beta.abs()+1e-8).sum(-1)
+    log_prior = (alpha_ - 1) * torch.log(beta).sum(-1)
+    # breakpoint()
 
     return log_const + log_prior
 
-def unnorm_lop_posterior(beta: torch.Tensor, cond: torch.Tensor, sigma:torch.Tensor, X: torch.Tensor, y: torch.Tensor, args):
+def dirichlet_prior_beta(beta: torch.Tensor):
+
+    dim = beta.shape[-1]
+    alpha = torch.ones((1, dim), device= beta.device) * 10
+    # alpha [:,:5] = 0.0001
+
+    log_const = torch.lgamma(alpha).sum(-1) - torch.lgamma(alpha.sum(-1))
+    # log_const = torch.lgamma(alpha_ * K) - K * torch.lgamma(alpha_)
+    log_prior = ((alpha - 1) * torch.log(beta)).sum(-1)
+
+    return log_const + log_prior
+
+def unnorm_log_posterior(beta: torch.Tensor, cond: torch.Tensor, sigma:torch.Tensor, X: torch.Tensor, y: torch.Tensor, args, flow_prior=None):
     log_lik = gaussian_log_likelihood(beta=beta, sigma=sigma, X=X, y=y)
     # log_prior = laplace_prior(beta=beta, lamb=cond, args=args)
-    # log_prior = lp_norm_prior(beta=beta, lamb=cond, args=args)
+    # log_prior = lp_norm_prior(beta=beta, cond=cond, args=args)
     log_prior = dirichlet_prior(beta=beta, alpha=cond, args=args)
-
+    # log_prior = dirichlet_prior_beta(beta=beta)
+    # log_prior = lp_norm_prior_on_manifold(beta=beta, lamb=cond, flow=flow_prior, args=args)
+    # breakpoint()
     return log_lik + log_prior
 
 def t_student_log_likelihood(beta: torch.Tensor, a0: torch.Tensor, b0: torch.Tensor, X: torch.Tensor, y: torch.Tensor):
@@ -104,8 +121,33 @@ def t_student_log_likelihood(beta: torch.Tensor, a0: torch.Tensor, b0: torch.Ten
 
     return log_lk + log_lk_const
 
-def main():
+def compute_norm_generalized_gaussian(args):
     args.log_cond = True
+    set_random_seeds(args.seed)
+    create_directories()
+    flow = build_simple_cond_flow_l1_manifold(args, n_layers=3, n_hidden_features=64, n_context_features=64, clamp_theta=False)
+    model_name = f"/home/negri0001/Documents/Marcello/cond_flows/manifold_flow/imf/experiments/models/generalized_gaussian_dim{args.datadim}_p{args.beta}_lmin{args.cond_min}_lmax{args.cond_max}"
+    lp_norm_prior_ = partial(lp_norm_prior, args=args)
+    if not os.path.isfile(model_name):
+        flow, loss, loss_T = train_regression_cond(flow, lp_norm_prior_, args=args, manifold=False)
+        torch.save(flow.state_dict(), model_name)
+        plot_loss(loss)
+    else:
+        flow.load_state_dict(torch.load(model_name))
+
+    return flow
+
+def lp_norm_prior_on_manifold(beta: torch.Tensor, lamb: torch.Tensor, flow, args):
+    if args.log_cond: lamb_ = 10 ** lamb
+    else: lamb_ = lamb
+
+    dim = beta.shape[-1]
+    with torch.no_grad():
+        log_prob = flow.log_prob(beta.reshape(-1, dim), context=lamb_)
+    return log_prob
+
+def main():
+    args.log_cond = False
 
     # set random seed for reproducibility
     set_random_seeds(args.seed)
@@ -113,19 +155,24 @@ def main():
 
     # load data
     # X_tensor, y_tensor, X_np, y_np = load_diabetes_dataset(device=args.device)
-    X_np, y_np, true_beta = generate_regression_dataset_positive_coeff(n_samples=100, n_features=20, n_non_zero=5, noise_std=1)
+    X_np, y_np, true_beta = generate_regression_dataset_positive_coeff(n_samples=100, n_features=10, n_non_zero=5, noise_std=1)
     X_tensor = torch.from_numpy(X_np).float().to(device=args.device)
     y_tensor = torch.from_numpy(y_np).float().to(device=args.device)
+    args.datadim = X_tensor.shape[1]
 
+    # flow_prior = compute_norm_generalized_gaussian(args)
+    # flow_prior.eval()
     sigma = torch.tensor(.7, device=args.device)
-    log_unnorm_posterior = partial(unnorm_lop_posterior, sigma=sigma, X=X_tensor, y=y_tensor, args=args)
+    log_unnorm_posterior = partial(unnorm_log_posterior, sigma=sigma, X=X_tensor, y=y_tensor, args=args)
+    # log_unnorm_posterior = partial(unnorm_log_posterior, sigma=sigma, X=X_tensor, y=y_tensor, flow_prior=flow_prior, args=args)
     # a0 = torch.tensor(2., device=args.device)
     # b0 = torch.tensor(2., device=args.device)
     # log_unnorm_posterior = partial(t_student_log_likelihood, a0=a0, b0=b0, X=X_tensor, y=y_tensor)
 
     # build model
-    args.datadim = X_tensor.shape[1]
-    flow = build_cond_flow_l1_manifold(args, clamp_theta=False)
+
+    # flow = build_circular_cond_flow_l1_manifold(args)
+    flow = build_cond_flow_l1_manifold(args)
 
     # torch.autograd.set_detect_anomaly(True)
     # train model
@@ -137,7 +184,7 @@ def main():
     flow.eval()
     samples, cond, kl = generate_samples(flow, args, cond=True, log_unnorm_posterior=log_unnorm_posterior, manifold=False, context_size=10, sample_size=100, n_iter=100)
     # plot_betas_norm(samples_sorted=samples, norm_sorted=cond, X_np=X_np, y_np=y_np, norm=args.beta)#, true_coeff=true_beta)
-    plot_betas_lambda_fixed_norm(samples=samples, lambdas=cond, dim=X_np.shape[-1], conf=0.95, n_plots=1, true_coeff=true_beta)
+    plot_betas_lambda_fixed_norm(samples=samples, lambdas=cond, dim=X_np.shape[-1], conf=0.95, n_plots=1, true_coeff=true_beta, log_scale=args.log_cond)
 
     plot_marginal_likelihood(kl, cond, args)
     breakpoint()

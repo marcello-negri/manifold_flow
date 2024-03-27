@@ -3,9 +3,10 @@ import torch
 import warnings
 
 from normflows.flows.neural_spline.wrapper import CircularAutoregressiveRationalQuadraticSpline, CircularCoupledRationalQuadraticSpline
+from normflows.flows.neural_spline.wrapper import AutoregressiveRationalQuadraticSpline, CoupledRationalQuadraticSpline
 from normflows.distributions.base import UniformGaussian
 
-from enflows.transforms import Sigmoid
+from enflows.transforms import Sigmoid, Tanh
 from enflows.distributions import StandardNormal, Uniform
 from enflows.distributions.normal import MOG
 from enflows.nn.nets.resnet import ConvResidualNet, ResidualNet
@@ -17,7 +18,8 @@ from enflows.transforms.base import CompositeTransform, InverseTransform
 from enflows.nn.nets import Sin
 from enflows.flows.base import Flow
 from enflows.transforms.lipschitz import LipschitzDenseNetBuilder, iResBlock
-from enflows.transforms.injective import ConstrainedAnglesSigmoid, ClampedTheta, LearnableManifoldFlow, SphereFlow, LpManifoldFlow, ScaleLastDim, ResidualNetInput
+from enflows.transforms.injective import (ConstrainedAnglesSigmoid, ClampedTheta, ClampedThetaPositive, LearnableManifoldFlow,
+                                          SphereFlow, LpManifoldFlow, ScaleLastDim, ResidualNetInput, CondLpManifoldFlow, PositiveL1ManifoldFlow)
 from enflows.transforms.linear import ScalarScale, ScalarShift
 from enflows.transforms.svd import SVDLinear
 
@@ -355,7 +357,7 @@ def build_cond_flow_reverse(args, clamp_theta=False):
     if clamp_theta:
         transformation_layers.append(ClampedTheta(eps=1e-3))
 
-    manifold_mapping = LpManifoldFlow(norm=1., p=args.beta, logabs_jacobian=args.logabs_jacobian)
+    manifold_mapping = CondLpManifoldFlow(norm=1., p=args.beta, logabs_jacobian=args.logabs_jacobian)
 
     transformation_layers.append(manifold_mapping)
 
@@ -454,3 +456,149 @@ def build_cond_flow_ambient_rvs(flow_dim, n_layers=3, hidden_features=256, conte
         )
 
     return base_dist, transformation_layers
+
+
+def build_cond_flow_l1_manifold(args, clamp_theta=False):
+    base_dist = StandardNormal(shape=[args.datadim - 1])
+    # base_dist = UniformSphere(shape=[flow_dim - 1])
+    # Define an invertible transformation
+    transformation_layers = []
+
+    # densenet_builder = LipschitzDenseNetBuilder(input_channels=args.datadim - 1, densenet_depth=3,
+    #                                             context_features=args.n_context_features, activation_function=Sin(w0=1), lip_coeff=.97)
+
+    for _ in range(args.n_layers):
+        transformation_layers.append(RandomPermutation(features=args.datadim - 1))
+        # transformation_layers.append(InverseTransform(SVDLinear(features= flow_dim - 1, num_householder=4)))
+        # transformation_layers.append(InverseTransform(iResBlock(densenet_builder.build_network(), brute_force=True)))
+        # transformation_layers.append(iResBlock(densenet_builder.build_network(), brute_force=True))
+        transformation_layers.append(InverseTransform(
+            MaskedSumOfSigmoidsTransform(features=args.datadim - 1, hidden_features=args.n_hidden_features,
+                                         context_features=args.n_context_features, num_blocks=3, n_sigmoids=30))
+        )
+        transformation_layers.append(
+            InverseTransform(
+                ActNorm(features=args.datadim - 1)
+            )
+        )
+
+    transformation_layers.append(
+        InverseTransform(
+            CompositeTransform([Sigmoid(eps=1e-4),
+                                ScalarScale(scale=0.5 * torch.pi, trainable=False, eps=0)
+                                # ScalarShift(shift=1, trainable=False),
+                                # ScalarScale(scale=np.pi, trainable=False),
+                                # ScalarScale(scale=0.25, trainable=False)
+                                # Sigmoid(temperature=1, learn_temperature=True),
+
+            ])
+        )
+    )
+
+    # transformation_layers.append(LpManifoldFlow(norm=1., p=1., logabs_jacobian=args.logabs_jacobian))
+    transformation_layers.append(PositiveL1ManifoldFlow(logabs_jacobian=args.logabs_jacobian))
+
+    transformation_layers = transformation_layers[::-1]
+    transform = CompositeTransform(transformation_layers)
+
+    # define embedding (conditional) network
+    embedding_net = ResidualNetInput(in_features=1, out_features=args.n_context_features, hidden_features=256,
+                                     num_blocks=3, activation=torch.nn.functional.relu)
+
+    # combine into a flow
+    flow = Flow(transform, base_dist, embedding_net=embedding_net).to(args.device)
+
+    return flow
+
+
+def build_simple_cond_flow_l1_manifold(args, n_layers, n_hidden_features, n_context_features,  clamp_theta=False):
+    base_dist = StandardNormal(shape=[args.datadim - 1])
+    # base_dist = UniformSphere(shape=[flow_dim - 1])
+    # Define an invertible transformation
+    transformation_layers = []
+
+    # densenet_builder = LipschitzDenseNetBuilder(input_channels=args.datadim - 1, densenet_depth=3,
+    #                                             context_features=n_context_features, activation_function=Sin(w0=1), lip_coeff=.97)
+
+    for _ in range(n_layers):
+        transformation_layers.append(RandomPermutation(features=args.datadim - 1))
+        # transformation_layers.append(InverseTransform(SVDLinear(features= flow_dim - 1, num_householder=4)))
+        # transformation_layers.append(InverseTransform(iResBlock(densenet_builder.build_network(), brute_force=True)))
+        # transformation_layers.append(iResBlock(densenet_builder.build_network(), brute_force=True))
+        transformation_layers.append(InverseTransform(
+            MaskedSumOfSigmoidsTransform(features=args.datadim - 1, hidden_features=n_hidden_features,
+                                         context_features=n_context_features, num_blocks=3, n_sigmoids=30))
+        )
+        transformation_layers.append(
+            InverseTransform(
+                ActNorm(features=args.datadim - 1)
+            )
+        )
+
+    transformation_layers.append(
+        InverseTransform(
+            CompositeTransform([Sigmoid(eps=1e-8),
+                                ScalarScale(scale=0.5 * torch.pi - 1e-6, trainable=False, eps=1e-8)
+                                # ScalarShift(shift=1, trainable=False),
+                                # ScalarScale(scale=np.pi, trainable=False),
+                                # ScalarScale(scale=0.25, trainable=False)
+                                # Sigmoid(temperature=1, learn_temperature=True),
+            ])
+        )
+    )
+
+    transformation_layers.append(PositiveL1ManifoldFlow(logabs_jacobian=args.logabs_jacobian))
+
+    transformation_layers = transformation_layers[::-1]
+    transform = CompositeTransform(transformation_layers)
+
+    # define embedding (conditional) network
+    embedding_net = ResidualNetInput(in_features=1, out_features=n_context_features, hidden_features=64,
+                                     num_blocks=3, activation=torch.nn.functional.relu)
+
+    # combine into a flow
+    flow = Flow(transform, base_dist, embedding_net=embedding_net).to(args.device)
+
+    return flow
+
+def build_circular_cond_flow_l1_manifold(args):
+    # torch_one = torch.ones(1, device=device)
+    # base_dist = Uniform(shape=[flow_dim - 1], low=-torch_one, high=torch_one)
+    # base_dist = MultimodalUniform(shape=[flow_dim - 1], low=-torch_one, high=torch_one, n_modes=2)
+    base_dist = UniformSphere(shape=[args.datadim - 1], all_positive=True)
+    # n_modes = 20
+    # base_dist = MOG(means=torch.rand((n_modes, flow_dim-1), device=device)*2-1,
+    #                 stds=torch.ones((n_modes, flow_dim-1), device=device)*0.05, low=-1, high=1)
+
+    # base_dist = StandardNormal(shape=[flow_dim-1])
+    # base_dist = UniformGaussian(ndim=flow_dim - 1, ind=-1)
+
+    # Define an invertible transformation
+    transformation_layers = []
+
+    for _ in range(args.n_layers):
+        # transformation_layers.append(RandomPermutation(features=flow_dim - 1))
+        transformation_layers.append(
+                AutoregressiveRationalQuadraticSpline(num_input_channels=args.datadim - 1,
+                                                              num_hidden_channels=args.n_hidden_features,
+                                                              num_context_channels=args.n_context_features,
+                                                              num_blocks=3, num_bins=8, tail_bound=torch.pi*0.5,
+                                                              # ind_circ=[i for i in range(args.datadim - 1)]
+                                                              )
+        )
+
+    transformation_layers.append(InverseTransform(ClampedThetaPositive(eps=1e-6)))
+
+    transformation_layers.append(PositiveL1ManifoldFlow( logabs_jacobian=args.logabs_jacobian))
+
+    transformation_layers = transformation_layers[::-1]
+    transform = CompositeTransform(transformation_layers)
+
+    # define embedding (conditional) network
+    embedding_net = ResidualNetInput(in_features=1, out_features=args.n_context_features, hidden_features=64,
+                                     num_blocks=3, activation=torch.nn.functional.relu)
+
+    # combine into a flow
+    flow = Flow(transform, base_dist, embedding_net=embedding_net).to(args.device)
+
+    return flow
