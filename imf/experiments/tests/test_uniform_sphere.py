@@ -26,26 +26,27 @@ def plot_angle_distribution(samples, log_prob):
 
     plt.show()
 
-n_dim = 2
+n_dim = 24
 n_samples = 1000
-grid = torch.ones(n_samples, n_dim)
-linspace_x = torch.linspace(0,np.pi,100)
-linspace_y = torch.linspace(0,2*np.pi,200)
-mesh_x, mesh_y = torch.meshgrid(linspace_x, linspace_y)
-delta_x = linspace_x[1]-linspace_x[0]
-delta_y = linspace_y[1]-linspace_y[0]
-mesh_xx = mesh_x[1:,1:]-delta_x*0.5
-mesh_yy = mesh_y[1:,1:]-delta_y*0.5
-mesh = torch.cat((mesh_xx.reshape(-1,1), mesh_yy.reshape(-1,1)), dim=1)
+# grid = torch.ones(n_samples, n_dim)
+# linspace_x = torch.linspace(0,np.pi,100)
+# linspace_y = torch.linspace(0,2*np.pi,200)
+# mesh_x, mesh_y = torch.meshgrid(linspace_x, linspace_y)
+# delta_x = linspace_x[1]-linspace_x[0]
+# delta_y = linspace_y[1]-linspace_y[0]
+# mesh_xx = mesh_x[1:,1:]-delta_x*0.5
+# mesh_yy = mesh_y[1:,1:]-delta_y*0.5
+# mesh = torch.cat((mesh_xx.reshape(-1,1), mesh_yy.reshape(-1,1)), dim=1)
 
-base_dist = UniformSphere(shape=[n_dim])
+base_dist = UniformSphere(shape=[n_dim], all_positive=True)
 samples = base_dist.sample(n_samples * 10)
 
-log_prob = base_dist.log_prob(mesh)
-integral = (log_prob.exp()*delta_x*delta_y).sum()
+# log_prob = base_dist.log_prob(mesh)
+# integral = (log_prob.exp()*delta_x*delta_y).sum()
 
 breakpoint()
-plot_angle_distribution(samples.detach().numpy(), log_prob.detach().numpy())
+# plot_angle_distribution(samples.detach().numpy(), log_prob.detach().numpy())
+plot_angle_distribution(samples.detach().numpy(), np.ones(n_samples))
 
 
 

@@ -341,7 +341,7 @@ def main():
     params_flow = dict(q=q,
                   sigma=torch.tensor(0.7),
                   lr=1e-4,
-                  epochs=2000,
+                  epochs=200,
                   T0=5,
                   Tn=1,
                   iter_per_cool_step=100,

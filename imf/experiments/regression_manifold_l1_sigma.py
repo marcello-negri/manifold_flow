@@ -155,7 +155,7 @@ def main():
 
     # load data
     # X_tensor, y_tensor, X_np, y_np = load_diabetes_dataset(device=args.device)
-    X_np, y_np, true_beta = generate_regression_dataset_positive_coeff(n_samples=100, n_features=10, n_non_zero=9, noise_std=0.5)
+    X_np, y_np, true_beta = generate_regression_dataset_positive_coeff(n_samples=500, n_features=5, n_non_zero=3, noise_std=1)
     X_tensor = torch.from_numpy(X_np).float().to(device=args.device)
     y_tensor = torch.from_numpy(y_np).float().to(device=args.device)
     args.datadim = X_tensor.shape[1]
@@ -187,8 +187,8 @@ def main():
     # plot_betas_norm(samples_sorted=samples, norm_sorted=cond, X_np=X_np, y_np=y_np, norm=args.beta)#, true_coeff=true_beta)
     plot_betas_lambda_fixed_norm(samples=samples, lambdas=cond, dim=X_np.shape[-1], conf=0.95, n_plots=1, true_coeff=true_beta, log_scale=args.log_cond)
 
-    plot_marginal_likelihood(kl, cond, args)
-    breakpoint()
+    # plot_marginal_likelihood(kl, cond, args)
+
 
 if __name__ == "__main__":
     main()

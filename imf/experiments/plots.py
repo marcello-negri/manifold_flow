@@ -554,7 +554,55 @@ def plot_betas_lambda_fixed_norm(samples, lambdas, dim, conf=0.95, n_plots=1, tr
                 plt.xscale('log')
             # plt.savefig(f"{name_file}_{j}.pdf", bbox_inches='tight')
             plt.show()
-    #breakpoint()
+
+def plot_cumulative_returns(samples, lambdas, X_np, y_np, conf=0.95, n_plots=1):
+
+    returns = samples @ X_np.T
+    returns = np.cumprod(returns, axis=2)
+    mean_return = returns.mean(1).T
+    l_return = np.quantile(returns, 1 - conf, axis=1).T
+    r_return = np.quantile(returns, conf, axis=1).T
+
+    n_lines = lambdas.shape[0]
+    clrs = sns.color_palette("husl", n_lines)
+    with sns.axes_style("darkgrid"):
+        for j in range(n_lines):
+            fig, ax = plt.subplots(figsize=(14, 14))
+            color = clrs[j % n_lines]
+            ax.plot(range(X_np.shape[0]), mean_return[:, j], c=color, alpha=0.7, linewidth=1.5)
+            ax.fill_between(range(X_np.shape[0]), l_return[:, j], r_return[:, j], alpha=0.2, facecolor=color)
+            ax.plot(range(X_np.shape[0]), np.cumprod(y_np).ravel(), c='r', linestyle='dashed')
+            plt.xlabel(r"time", fontsize=18)
+            plt.ylabel(r'stock value', fontsize=18)
+            plt.xticks(fontsize=12)
+            plt.yticks(fontsize=12)
+            plt.title(f'Cumulative return for alpha={lambdas[j]:.2f}')
+            # plt.savefig(f"{name_file}_{j}.pdf", bbox_inches='tight')
+            plt.show()
+
+def plot_returns(samples, lambdas, X_np, y_np, conf=0.95, n_plots=1):
+
+    # mean and quantiles of returns
+    returns = samples @ X_np.T
+    mean_return = returns.mean(1).T
+    l_return = np.quantile(returns, 1 - conf, axis=1).T
+    r_return = np.quantile(returns, conf, axis=1).T
+
+    n_lines = lambdas.shape[0]
+    clrs = sns.color_palette("husl", n_lines)
+    fig, ax = plt.subplots(figsize=(14, 14))
+    with sns.axes_style("darkgrid"):
+        for j in range(n_lines):
+            color = clrs[j % n_lines]
+            ax.plot(range(X_np.shape[0]), mean_return[:, j], c=color, alpha=0.7, linewidth=1.5)
+            ax.fill_between(range(X_np.shape[0]), l_return[:, j], r_return[:, j], alpha=0.2, facecolor=color)
+        ax.plot(range(X_np.shape[0]), y_np.ravel(), linestyle='dashed')
+        plt.xlabel(r"return", fontsize=18)
+        plt.ylabel(r'time', fontsize=18)
+        plt.xticks(fontsize=12)
+        plt.yticks(fontsize=12)
+        # plt.savefig(f"{name_file}_{j}.pdf", bbox_inches='tight')
+        plt.show()
 
 # def plot_betas_lambda(samples, lambdas, X_np, y_np, sigma, n_bins=51, norm=1, a=0.95, n_plots=1, gt='linear_regression', folder_name='./'):
 #
@@ -725,3 +773,64 @@ def plot_marginal_likelihood (kl_sorted, cond_sorted, args):
     plt.show()
 
     return opt_cond
+
+def plot_clusters(samples, cond, cond_indices, n_clusters):
+    from sklearn.decomposition import PCA
+    from sklearn.cluster import KMeans
+    from sklearn.metrics import silhouette_score
+    import numpy as np
+    import tqdm
+
+    kmeans_kwargs = {
+    "init": "random",
+    "n_init": 10,
+    "max_iter": 300,
+    "random_state": 42,
+    }
+
+    for idx in tqdm.tqdm(cond_indices):
+        silhouette_coefficients = []
+        samples_refined = np.array(samples)
+        samples_refined[samples_refined < 1. / samples_refined.shape[-1]] = 0
+        for k in range(2, n_clusters):
+            kmeans = KMeans(n_clusters=k, **kmeans_kwargs)
+            kmeans.fit(samples_refined[idx])
+            score = silhouette_score(samples_refined[idx], kmeans.labels_)
+            silhouette_coefficients.append(score)
+
+        opt_idx = np.argmax(silhouette_coefficients)
+        kmeans = KMeans(n_clusters= opt_idx + 1, **kmeans_kwargs)
+
+        pca = PCA(2)
+        df = pca.fit_transform(samples_refined[idx])
+        labels = kmeans.fit_predict(df)
+        u_labels = np.unique(labels)
+        centroids = kmeans.cluster_centers_
+
+        fig, ax = plt.subplots()
+        for i in u_labels:
+            ax.scatter(df[labels == i, 0], df[labels == i, 1], label=i, alpha=0.2)
+            cluster_mean = samples[idx][labels == i].mean(0)
+            txt = [f"{value:.2f}" for value in cluster_mean]
+            ax.scatter(centroids[i, 0], centroids[i, 1], s=40, color='k')
+            ax.annotate(txt, (centroids[i, 0], centroids[i, 1]))
+
+        plt.legend()
+        plt.title(f"cond = {cond[idx]:.2e} n_clusters = {opt_idx+1}")
+        plt.show()
+
+
+def plot_samples_3d(samples):
+    fig = plt.figure(figsize=(12, 12))
+    ax = fig.add_subplot(projection='3d')
+    ax.scatter(samples[:,0], samples[:,1], samples[:,2], s=1, alpha=0.01)
+    plt.show()
+
+def plot_angles_3d(samples, args):
+    samples = samples.reshape(-1,3)
+    samples_cat = cartesian_to_spherical_torch(torch.tensor(samples, device=args.device))
+    fig, axs = plt.subplots(1,3, figsize=(14, 14))
+    axs[0].hist(samples_cat[:,0].detach().cpu().numpy(),bins=50)
+    axs[1].hist(samples_cat[:, 1].detach().cpu().numpy(),bins=50)
+    axs[2].hist(samples_cat[:, 2].detach().cpu().numpy(),bins=50)
+    plt.show()

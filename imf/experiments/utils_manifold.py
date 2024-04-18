@@ -305,14 +305,17 @@ def train_regression_cond(model, log_unnorm_posterior, args, manifold, **kwargs)
 #
 #     return samples, log_probs
 
-def generate_samples(model, args, cond=False, log_unnorm_posterior=None, manifold=True, context_size=10, sample_size=100, n_iter=1000):
+def generate_samples (model, args, n_lambdas=0, cond=False, log_unnorm_posterior=None, manifold=True, context_size=10, sample_size=100, n_iter=1000):
     it = 0
     samples_list, log_probs_list, kl_list, cond_list = [], [], [], []
     for _ in tqdm.tqdm(range(n_iter)):
         # it = it + 1
         if cond and log_unnorm_posterior is not None:
-            rand_cond = torch.rand(context_size, device=args.device)
-            uniform_cond = (rand_cond * (args.cond_max - args.cond_min) + args.cond_min).view(-1, 1)
+            if n_lambdas == 0:
+                rand_cond = torch.rand(context_size, device=args.device)
+                uniform_cond = (rand_cond * (args.cond_max - args.cond_min) + args.cond_min).view(-1, 1)
+            else:
+                uniform_cond = torch.linspace(args.cond_min, args.cond_max, n_lambdas, device=args.device).view(-1,1)
             # if (args.cond_max < 1 and args.cond_min < 1):
             #     factor = it / n_iter
             #     uniform_cond = factor * uniform_cond + (1-factor)*1.0

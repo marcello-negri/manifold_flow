@@ -11,7 +11,7 @@ from functools import partial
 from imf.experiments.utils_manifold import train_regression_cond, generate_samples
 from imf.experiments.datasets import load_diabetes_dataset, generate_regression_dataset, generate_regression_dataset_positive_coeff
 from imf.experiments.architecture import build_cond_flow_reverse, build_cond_flow_l1_manifold, build_simple_cond_flow_l1_manifold, build_circular_cond_flow_l1_manifold
-from imf.experiments.plots import plot_betas_lambda_fixed_norm, plot_loss, plot_betas_lambda, plot_marginal_likelihood, plot_returns
+from imf.experiments.plots import plot_betas_lambda_fixed_norm, plot_loss, plot_betas_lambda, plot_marginal_likelihood, plot_returns, plot_cumulative_returns
 
 import logging
 logger = logging.getLogger(__name__)
@@ -183,8 +183,8 @@ def main():
     # load data
     # X_tensor, y_tensor, X_np, y_np = load_diabetes_dataset(device=args.device)
     dates, X_np = load_returns_dataset()
-    y_np = X_np[:1]
-    X_np = X_np[1:52].T
+    y_np = X_np[-1:, :-200]
+    X_np = X_np[:-1, :-200].T
     # X_np, y_np, true_beta = generate_regression_dataset_positive_coeff(n_samples=100, n_features=10, n_non_zero=9, noise_std=0.5)
     X_tensor = torch.from_numpy(X_np).float().to(device=args.device)
     y_tensor = torch.from_numpy(y_np).float().to(device=args.device)
@@ -192,7 +192,7 @@ def main():
 
     # flow_prior = compute_norm_generalized_gaussian(args)
     # flow_prior.eval()
-    sigma = torch.tensor(2, device=args.device)
+    sigma = torch.tensor(1, device=args.device)
     log_unnorm_posterior = partial(unnorm_log_posterior, sigma=sigma, X=X_tensor, y=y_tensor, args=args)
     # log_unnorm_posterior = partial(unnorm_log_posterior, sigma=sigma, X=X_tensor, y=y_tensor, flow_prior=flow_prior, args=args)
     # a0 = torch.tensor(2., device=args.device)
@@ -212,16 +212,17 @@ def main():
 
     # evaluate model
     flow.eval()
-    samples, cond, kl = generate_samples(flow, args, cond=True, log_unnorm_posterior=log_unnorm_posterior, manifold=False, context_size=10, sample_size=100, n_iter=100)
+    # samples, cond, kl = generate_samples(flow, args, cond=True, log_unnorm_posterior=log_unnorm_posterior, manifold=False, context_size=10, sample_size=100, n_iter=100)
+    samples, cond, kl = generate_samples(flow, args, n_lambdas=20, cond=True, log_unnorm_posterior=log_unnorm_posterior, manifold=False, context_size=10, sample_size=100, n_iter=1)
     # plot_betas_norm(samples_sorted=samples, norm_sorted=cond, X_np=X_np, y_np=y_np, norm=args.beta)#, true_coeff=true_beta)
     plot_betas_lambda_fixed_norm(samples=samples, lambdas=cond, dim=X_np.shape[-1], conf=0.95, n_plots=1, log_scale=args.log_cond)
 
-    samples, cond, kl = generate_samples(flow, args, cond=True, log_unnorm_posterior=log_unnorm_posterior,
-                                         manifold=False, context_size=1, sample_size=1000, n_iter=10)
+    samples, cond, kl = generate_samples(flow, args, n_lambdas=5, cond=True, log_unnorm_posterior=log_unnorm_posterior,
+                                         manifold=False, context_size=1, sample_size=100, n_iter=1)
     plot_returns(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, conf=0.95, n_plots=1)
+    plot_cumulative_returns(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, conf=0.95, n_plots=1)
 
-    plot_marginal_likelihood(kl, cond, args)
-    breakpoint()
+    # plot_marginal_likelihood(kl, cond, args)
 
 if __name__ == "__main__":
     main()
