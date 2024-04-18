@@ -262,14 +262,27 @@ def train_regression_cond(model, log_unnorm_posterior, args, manifold, **kwargs)
             else:
                 log_posterior = log_unnorm_posterior(beta=samples, cond=uniform_cond)
 
-            kl_div = torch.mean(log_prob - log_posterior / T)
+            if isinstance(log_posterior, tuple):
+                _, log_prior, log_like = log_posterior
+                k = 4.0  # >1 reduces the impact on the prior. <1 increases impact on prior. <0 for no impact
+                if T > 1:
+                    Tp = (T+k-1)/k
+                else:
+                    Tp = T
+                log_posterior_noT = log_prior+log_like
+                log_posterior = log_prior / Tp + log_like / T
+            else:
+                log_posterior_noT = log_posterior
+                log_posterior = log_posterior / T
+            kl_div = torch.mean(log_prob - log_posterior)
             kl_div.backward()
 
             optimizer.step()
 
-            loss.append(torch.mean(log_prob - log_posterior).cpu().detach().numpy())
+            loss.append(torch.mean(log_prob - log_posterior_noT).cpu().detach().numpy())
             loss_T.append(torch.mean(log_prob - log_posterior / T).cpu().detach().numpy())
-            print(f"Training loss at step {epoch}: {loss[-1]:.1f} and {loss_T[-1]:.1f} * (T = {T:.3f})")
+            if epoch % 10 == 0:
+                print(f"Training loss at step {epoch}: {loss[-1]:.1f} and {loss_T[-1]:.1f} * (T = {T:.3f})")
 
     except KeyboardInterrupt:
         print("interrupted..")
@@ -292,7 +305,7 @@ def train_regression_cond(model, log_unnorm_posterior, args, manifold, **kwargs)
 #
 #     return samples, log_probs
 
-def generate_samples (model, args, cond=False, log_unnorm_posterior=None, manifold=True, context_size=10, sample_size=100, n_iter=1000):
+def generate_samples(model, args, cond=False, log_unnorm_posterior=None, manifold=True, context_size=10, sample_size=100, n_iter=1000):
     it = 0
     samples_list, log_probs_list, kl_list, cond_list = [], [], [], []
     for _ in tqdm.tqdm(range(n_iter)):
@@ -308,6 +321,8 @@ def generate_samples (model, args, cond=False, log_unnorm_posterior=None, manifo
                 log_lik = log_unnorm_posterior(beta=posterior_samples)
             else:
                 log_lik = log_unnorm_posterior(beta=posterior_samples, cond=uniform_cond)
+            if isinstance(log_lik, tuple):
+                log_lik = log_lik[0]
             kl_div = log_probs_samples - log_lik
             kl_list.append(kl_div.detach().cpu().numpy())
             if args.log_cond: uniform_cond = 10 ** uniform_cond
