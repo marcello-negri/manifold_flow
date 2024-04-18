@@ -554,7 +554,7 @@ def plot_betas_lambda_fixed_norm(samples, lambdas, dim, conf=0.95, n_plots=1, tr
                 plt.xscale('log')
             # plt.savefig(f"{name_file}_{j}.pdf", bbox_inches='tight')
             plt.show()
-    breakpoint()
+    #breakpoint()
 
 # def plot_betas_lambda(samples, lambdas, X_np, y_np, sigma, n_bins=51, norm=1, a=0.95, n_plots=1, gt='linear_regression', folder_name='./'):
 #
