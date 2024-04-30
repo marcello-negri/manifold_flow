@@ -160,10 +160,10 @@ def main():
     set_random_seeds(args.seed)
     create_directories()
 
-    n_features = 10
-    non_zero = 5
+    n_features = 3
+    non_zero = 2
     simplex = True
-    only_prior = False
+    only_prior = True
 
     # load data
     # X_tensor, y_tensor, X_np, y_np = load_diabetes_dataset(device=args.device)

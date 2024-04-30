@@ -436,19 +436,19 @@ def build_cond_flow_ambient_rvs(flow_dim, n_layers=3, hidden_features=256, conte
     # Define an invertible transformation
     transformation_layers = []
 
-    densenet_builder = LipschitzDenseNetBuilder(input_channels=flow_dim, densenet_depth=3,
-                                                context_features=context_features, activation_function=Sin(w0=1), lip_coeff=.97)
+    # densenet_builder = LipschitzDenseNetBuilder(input_channels=flow_dim, densenet_depth=3,
+    #                                             context_features=context_features, activation_function=Sin(w0=1), lip_coeff=.97)
 
     for _ in range(n_layers):
         transformation_layers.append(RandomPermutation(features=flow_dim))
         # transformation_layers.append(InverseTransform(SVDLinear(features= flow_dim - 1, num_householder=4)))
 
-        transformation_layers.append(InverseTransform(iResBlock(densenet_builder.build_network(), brute_force=False)))
+        # transformation_layers.append(InverseTransform(iResBlock(densenet_builder.build_network(), brute_force=False)))
         # transformation_layers.append(iResBlock(densenet_builder.build_network(), brute_force=True))
-        # transformation_layers.append(InverseTransform(
-        #         MaskedSumOfSigmoidsTransform(features=flow_dim, hidden_features=hidden_features,
-        #                                      context_features=context_features, num_blocks=3, n_sigmoids=30))
-        # )
+        transformation_layers.append(InverseTransform(
+                MaskedSumOfSigmoidsTransform(features=flow_dim, hidden_features=hidden_features,
+                                             context_features=context_features, num_blocks=3, n_sigmoids=30))
+        )
         transformation_layers.append(
             InverseTransform(
                 ActNorm(features=flow_dim)
@@ -562,10 +562,10 @@ def build_simple_cond_flow_l1_manifold(args, n_layers, n_hidden_features, n_cont
     return flow
 
 def build_circular_cond_flow_l1_manifold(args):
-    # torch_one = torch.ones(1, device=device)
-    # base_dist = Uniform(shape=[flow_dim - 1], low=-torch_one, high=torch_one)
+    # torch_one = torch.ones(1, device=args.device)
+    # base_dist = Uniform(shape=[args.datadim - 1], low=torch_one * 0, high=torch_one * 0.5 * torch.pi)
     # base_dist = MultimodalUniform(shape=[flow_dim - 1], low=-torch_one, high=torch_one, n_modes=2)
-    #base_dist = UniformSphere(shape=[args.datadim - 1], all_positive=True)
+    # base_dist = UniformSphere(shape=[args.datadim - 1], all_positive=True)
     base_dist = UniformSimplex(shape=[args.datadim - 1], extend_star_like=False)
     # n_modes = 20
     # base_dist = MOG(means=torch.rand((n_modes, flow_dim-1), device=device)*2-1,

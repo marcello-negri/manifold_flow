@@ -428,7 +428,7 @@ def load_mesh():
 
 from sklearn.linear_model import LinearRegression, Lasso, Ridge, LogisticRegression, lasso_path
 
-def plot_lines_gt (x_gt, y_gt, dim, n_plots, x_model=None, y_mean_model=None, y_l_model=None, y_r_model=None, log_scale=True, norm=1, name_file=None, coarse=1, true_coeff=None):
+def plot_lines_gt (x_gt, y_gt, dim, n_plots, x_model=None, y_mean_model=None, y_l_model=None, y_r_model=None, log_scale=True, norm=1, name_file=None, coarse=1, true_coeff=None, x_label='norm'):
     n_lines = dim // n_plots
     clrs = sns.color_palette("husl", n_lines)
     for i in range(n_plots):
@@ -445,15 +445,20 @@ def plot_lines_gt (x_gt, y_gt, dim, n_plots, x_model=None, y_mean_model=None, y_
                 if true_coeff is not None:
                     if true_coeff[j]!=0:
                         ax.axhline(y=true_coeff[j], xmin=x_gt[::coarse].min(), xmax=x_gt[::coarse].max(), c=color, alpha=0.7, linewidth=1.5, linestyle=':')
-            plt.xlabel(r"$||\beta||_{%s}$"%norm, fontsize=18)
-            plt.ylabel(r'$\beta$', fontsize=18)
-            plt.locator_params(axis='y', nbins=4)
-            plt.xticks(fontsize=12)
-            plt.yticks(fontsize=12)
-            if log_scale: plt.xscale('log')
-            if name_file is not None:
-                plt.savefig(f"{name_file}_{j}.pdf", bbox_inches='tight')
-            plt.show()
+        if x_label == "norm":
+            plt.xlabel(r"$||\beta||_{%s}$" % norm, fontsize=18)
+        elif x_label == "lambda":
+            plt.xlabel(r"$\lambda$", fontsize=18)
+        else:
+            raise ValueError("x_label must be either 'norm' or 'lambda'")
+        plt.ylabel(r'$\beta$', fontsize=18)
+        plt.locator_params(axis='y', nbins=4)
+        plt.xticks(fontsize=12)
+        plt.yticks(fontsize=12)
+        if log_scale: plt.xscale('log')
+        if name_file is not None:
+            plt.savefig(f"{name_file}_{j}.pdf", bbox_inches='tight')
+        plt.show()
 
 def plot_betas_lambda(samples, lambdas, X_np, y_np, sigma, gt_only=False, min_bin=None, max_bin=None, n_bins=51, norm=1, conf=0.95, n_plots=1, gt='linear_regression', folder_name='./', true_coeff=None):
 
@@ -466,9 +471,10 @@ def plot_betas_lambda(samples, lambdas, X_np, y_np, sigma, gt_only=False, min_bi
         else:
             alphas, beta_path, _ = lasso_path(X_np, y_np)
             beta_path = beta_path.T
+            alphas = alphas * X_np.shape[0] / sigma **2
         if gt_only:
             plot_lines_gt(x_model=None, y_mean_model=None, y_l_model=None, y_r_model=None, x_gt=alphas, y_gt=beta_path,
-                          dim=X_np.shape[-1], n_plots=n_plots, log_scale=True, norm=norm, true_coeff=true_coeff)
+                          dim=X_np.shape[-1], n_plots=n_plots, log_scale=True, norm=norm, true_coeff=true_coeff, x_label="lambda")
             norms_sorted, coeff_sorted = sort_path_by_norm(beta_path, norm=norm)
             plot_lines_gt(x_model=None, y_mean_model=None, y_l_model=None, y_r_model=None, x_gt=norms_sorted,
                           y_gt=coeff_sorted,
@@ -496,9 +502,8 @@ def plot_betas_lambda(samples, lambdas, X_np, y_np, sigma, gt_only=False, min_bi
     sample_mean = samples.mean(1)
     l_quant = np.quantile(samples, 1 - conf, axis=1)
     r_quant = np.quantile(samples, conf, axis=1)
-
     plot_lines_gt(x_model=lambdas, y_mean_model=sample_mean, y_l_model=l_quant, y_r_model=r_quant, x_gt=alphas,
-                  y_gt=beta_path, dim=X_np.shape[-1], n_plots=n_plots, norm=norm, name_file=None, true_coeff=true_coeff)
+                  y_gt=beta_path, dim=X_np.shape[-1], n_plots=n_plots, norm=norm, name_file=None, true_coeff=true_coeff, x_label="lambda")
 
     # 2) compute solution path for flow samples as a function of norm
     # first compute norm of each sample and then group samples by norm

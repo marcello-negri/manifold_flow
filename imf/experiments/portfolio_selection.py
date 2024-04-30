@@ -20,7 +20,7 @@ parser = argparse.ArgumentParser(description='Process some integers.')
 
 # TRAIN PARAMETERS
 parser.add_argument("--device", type=str, default="cuda", help='device for training the model')
-parser.add_argument('--epochs', metavar='e', type=int, default=1_000, help='number of epochs')
+parser.add_argument('--epochs', metavar='e', type=int, default=2_000, help='number of epochs')
 parser.add_argument('--lr', metavar='lr', type=float, default=1e-3, help='learning rate')
 parser.add_argument('--seed', metavar='s', type=int, default=1234, help='random seed')
 parser.add_argument("--overwrite", action="store_true", help="re-train and overwrite flow model")
@@ -88,7 +88,6 @@ def dirichlet_prior(beta: torch.Tensor, alpha: torch.Tensor, args):
     K = beta.shape[-1]
     log_const = torch.lgamma(alpha_ * K) - K * torch.lgamma(alpha_)
     log_prior = (alpha_ - 1) * torch.log(beta).sum(-1)
-    # breakpoint()
 
     return log_const + log_prior
 
@@ -147,7 +146,7 @@ def lp_norm_prior_on_manifold(beta: torch.Tensor, lamb: torch.Tensor, flow, args
         log_prob = flow.log_prob(beta.reshape(-1, dim), context=lamb_)
     return log_prob
 
-def load_returns_dataset():
+def load_returns_dataset(stock_to_replicate=0, timesteps=-1):
     # the dataset contains returns of 99 stocks expressed in relative terms r_i = (p_i - p_i-1)/p_i-1
     df = pd.read_csv("/home/negri0001/Documents/Marcello/cond_flows/manifold_flow/imf/experiments/ret_rf.csv")
     df = df.dropna(axis=1) # timesteps x stocks
@@ -155,10 +154,18 @@ def load_returns_dataset():
     df_np = df.iloc[:,1:].values.T # stocks x timesteps
     df_np = df_np + 1 # convert relative returns to price ratios i.e. r'_i = p_i/p_i-1
 
-    plt.plot(np.cumprod(df_np.T, axis=0))
+    cum_return = np.cumprod(df_np.T, axis=0)
+    fig, axs = plt.subplots(1, 2, figsize=(10, 5))
+    axs[0].plot(cum_return)
+    axs[1].plot(cum_return.mean(1), label="average stock return")
+    axs[1].plot(cum_return[:, stock_to_replicate], linestyle='--', color='r', label="stock to replicate")
     plt.show()
 
-    return dates, df_np
+    X_np = df_np[np.arange(df_np.shape[0])!=stock_to_replicate, :timesteps].T
+    # X_np = df_np[:, :timesteps].T
+    y_np = df_np[stock_to_replicate, :timesteps].reshape(1,-1)
+
+    return dates[:timesteps], X_np, y_np
 
 def load_returns_dataset_():
     # the dataset contains returns of 99 stocks expressed in relative terms r_i = (p_i - p_i-1)/p_i-1
@@ -182,9 +189,7 @@ def main():
 
     # load data
     # X_tensor, y_tensor, X_np, y_np = load_diabetes_dataset(device=args.device)
-    dates, X_np = load_returns_dataset()
-    y_np = X_np[-1:, :-200]
-    X_np = X_np[:-1, :-200].T
+    dates, X_np, y_np = load_returns_dataset(stock_to_replicate=7, timesteps=-350)
     # X_np, y_np, true_beta = generate_regression_dataset_positive_coeff(n_samples=100, n_features=10, n_non_zero=9, noise_std=0.5)
     X_tensor = torch.from_numpy(X_np).float().to(device=args.device)
     y_tensor = torch.from_numpy(y_np).float().to(device=args.device)
@@ -201,8 +206,8 @@ def main():
 
     # build model
 
-    # flow = build_circular_cond_flow_l1_manifold(args)
-    flow = build_cond_flow_l1_manifold(args)
+    flow = build_circular_cond_flow_l1_manifold(args)
+    # flow = build_cond_flow_l1_manifold(args)
 
     # torch.autograd.set_detect_anomaly(True)
     # train model
@@ -217,9 +222,9 @@ def main():
     # plot_betas_norm(samples_sorted=samples, norm_sorted=cond, X_np=X_np, y_np=y_np, norm=args.beta)#, true_coeff=true_beta)
     plot_betas_lambda_fixed_norm(samples=samples, lambdas=cond, dim=X_np.shape[-1], conf=0.95, n_plots=1, log_scale=args.log_cond)
 
-    samples, cond, kl = generate_samples(flow, args, n_lambdas=5, cond=True, log_unnorm_posterior=log_unnorm_posterior,
+    samples, cond, kl = generate_samples(flow, args, n_lambdas=4, cond=True, log_unnorm_posterior=log_unnorm_posterior,
                                          manifold=False, context_size=1, sample_size=100, n_iter=1)
-    plot_returns(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, conf=0.95, n_plots=1)
+    # plot_returns(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, conf=0.95, n_plots=1)
     plot_cumulative_returns(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, conf=0.95, n_plots=1)
 
     # plot_marginal_likelihood(kl, cond, args)
