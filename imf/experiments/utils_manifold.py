@@ -233,12 +233,12 @@ def train_model_reverse(model, args, dataset, train_data_np, batch_size=100_000,
     return model, np.array(loss)
 
 
-def train_regression_cond(model, log_unnorm_posterior, args, manifold, **kwargs):
+def train_regression_cond(model, log_unnorm_posterior, args, manifold, tn, **kwargs):
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     # set up cooling schedule
     num_iter = args.epochs // args.iter_per_cool_step
-    cooling_function = gen_cooling_schedule(T0=args.T0, Tn=args.Tn, num_iter=num_iter - 1, scheme='exp_mult')
+    cooling_function = gen_cooling_schedule(T0=args.T0, Tn=tn, num_iter=num_iter - 1, scheme='exp_mult')
 
     loss, loss_T = [], []
     try:

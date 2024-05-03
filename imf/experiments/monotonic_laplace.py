@@ -1,9 +1,9 @@
 import matplotlib.pyplot as plt
+import seaborn
 import seaborn as sns
 import numpy as np
 import torch
 
-from rpy2 import robjects
 import pandas as pd
 
 import tqdm
@@ -12,27 +12,28 @@ from sklearn.linear_model import LinearRegression, Lasso, Ridge
 from sklearn.datasets import load_diabetes, make_regression
 from sklearn.preprocessing import StandardScaler
 from functools import partial
-from imf.experiments.architecture import build_circular_cond_flow_l1_manifold, build_cond_flow_reverse
+from imf.experiments.architecture import build_circular_cond_flow_l1_manifold, build_cond_flow_reverse, build_simple_cond_flow_l1_manifold
 from imf.experiments.utils_manifold import train_regression_cond, generate_samples
 from imf.experiments.plots import plot_betas_lambda_fixed_norm, plot_loss, plot_betas_lambda, plot_marginal_likelihood
+from imf.experiments.datasets import generate_regression_dataset
 
 parser = argparse.ArgumentParser(description='Process some integers.')
 
 # TRAIN PARAMETERS
 parser.add_argument("--device", type=str, default="cuda", help='device for training the model')
-parser.add_argument('--epochs', metavar='e', type=int, default=2_000, help='number of epochs')
+parser.add_argument('--epochs', metavar='e', type=int, default=400, help='number of epochs')
 parser.add_argument('--lr', metavar='lr', type=float, default=1e-3, help='learning rate')
 parser.add_argument('--seed', metavar='s', type=int, default=1234, help='random seed')
 parser.add_argument("--overwrite", action="store_true", help="re-train and overwrite flow model")
 parser.add_argument('--T0', metavar='T0', type=float, default=2., help='initial temperature')
-parser.add_argument('--Tn', metavar='Tn', type=float, default=1, help='final temperature')
-parser.add_argument('--iter_per_cool_step', metavar='ics', type=int, default=50, help='iterations per cooling step in simulated annealing')
+parser.add_argument('--Tn', metavar='Tn', type=float, default=1., help='final temperature')
+parser.add_argument('--iter_per_cool_step', metavar='ics', type=int, default=20, help='iterations per cooling step in simulated annealing')
 parser.add_argument('--cond_min', metavar='cmin', type=float, default=-2, help='minimum value of conditional variable')
 parser.add_argument('--cond_max', metavar='cmax', type=float, default=2, help='minimum value of conditional variable')
 parser.add_argument("--log_cond", action="store_true", help="samples conditional values logarithmically")
 
-parser.add_argument("--n_context_samples", metavar='ncs', type=int, default=1_000, help='number of context samples. Tot samples = n_context_samples x n_samples')
-parser.add_argument("--n_samples", metavar='ns', type=int, default=1, help='number of samples per context value. Tot samples = n_context_samples x n_samples')
+parser.add_argument("--n_context_samples", metavar='ncs', type=int, default=200, help='number of context samples. Tot samples = n_context_samples x n_samples')
+parser.add_argument("--n_samples", metavar='ns', type=int, default=5, help='number of samples per context value. Tot samples = n_context_samples x n_samples')
 parser.add_argument('--beta', metavar='be', type=float, default=1.0, help='p of the lp norm')
 
 
@@ -51,7 +52,7 @@ def set_random_seeds (seed=1234):
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-def synthetic_dataset(n=400, p=10, device='cuda', seed=1234):
+def synthetic_dataset(n=400, p=10, device='cuda', seed=1234, eps=5e-1):
     torch.manual_seed(seed)
     # parameters used: sample_size = 10, lambda_size = 500, T0=10, Tn=0.01, epochs//20
     X_tensor = (torch.randn(n, p) - .5).to(device)
@@ -60,7 +61,6 @@ def synthetic_dataset(n=400, p=10, device='cuda', seed=1234):
     # beta = (torch.rand(p + 1) * 2 - 1.).to(device)
     beta = (torch.rand(p) * 2 - 1.).to(device) * .5
     # add gaussian noise eps to observations
-    eps = 5e-1
     y_tensor = torch.normal(X_tensor @ beta, torch.ones(n).to(device) * eps)
 
     X_np = X_tensor.cpu().detach().numpy()
@@ -108,13 +108,13 @@ def log_prior_laplace(beta, lamb):
 
     return log_prior_DE + log_prior_const
 
-def compute_norm_const(pdf, lambdas, n_points=10_000):
-    x_mesh = torch.linspace(0, 10, n_points).repeat(lambdas.shape[0], 1)
-    x_mesh = x_mesh.to(lambdas.device) / lambdas
-    y_mesh = pdf(x_mesh, lambdas)
-    integral = torch.trapezoid(y=y_mesh, x=x_mesh, dim=-1) * 2
+def compute_norm_const(pdf, lambdas, dim, n_points=10_000, extent=1.0):
+    with torch.no_grad():
+        x_points = torch.rand(lambdas.shape[0], n_points//lambdas.shape[0], dim, device=lambdas.device) * extent
+        y_mesh = pdf(x_points, lambdas)
+        integral = torch.logsumexp(y_mesh, dim=-1)
 
-    return -torch.log(integral).reshape(-1,1)
+        return integral.reshape(-1,1) + extent*dim - n_points
 
 def laplace(beta, lambdas):
     return torch.exp(- torch.clamp(lambdas * beta.abs(), max=95))
@@ -132,7 +132,22 @@ def selu(beta, lambdas, scale):
     return -torch.nn.functional.selu(-laplace(beta, lambdas), alpha=scale)
 
 def sigmoid(beta, lambdas):
-    return torch.sigmoid(laplace(beta, lambdas))-0.5
+    return torch.sigmoid(laplace(beta, lambdas))-0.499
+
+def sigmoid_offset(beta, lamb_):
+    shape_ = beta.shape
+    beta_1 = laplace(beta, lamb_.unsqueeze(-1))
+    beta_ = beta_1[None,] - torch.tensor([0.0], device=beta.device)[:, None, None, None]  # , 4.0, 8.0, 8.1, 8.2, 23.0,23.5,24.0,24.5,25.0], device=beta.device)[:,None,None,None]
+    x = 1/0.0  # todo fix the code -> doesn't make sense with functions, log and activations anymore
+    vals = torch.logsumexp(torch.sigmoid(2.0 * beta_)-0.499, dim=0)
+    #vals = vals - torch.nn.functional.leaky_relu(-torch.log(beta_1) - 10.0, negative_slope=1e-3)
+    vals = vals.reshape(shape_)
+    return torch.log(vals).sum(-1)
+
+def softplus_offset(beta, lamb_):
+    llap = - torch.clamp(lamb_ * beta.abs(), max=95)
+    spllap = - torch.nn.functional.softplus(- llap * 10.0 - 40.0)
+    return spllap.sum(-1)
 
 def softplus(beta, lambdas):
     return torch.nn.functional.softplus(- torch.clamp(lambdas * beta.abs(), max=95))-torch.log(torch.tensor(2.0))
@@ -148,12 +163,19 @@ def log_prior_act_laplace(beta, lamb, act, args):
     # q_reshaped_beta = q.view(-1, *len(beta.shape[1:]) * (1,))  # (-1, 1, 1)
     # beta_q = (beta.abs() + eps).pow(q_reshaped_beta)
 
-    laplace_prior = torch.exp(- torch.clamp(lamb_.unsqueeze(-1) * beta.abs(), max=95))
+    # laplace_prior = torch.exp(- torch.clamp(lamb_.unsqueeze(-1) * beta.abs(), max=95))
     # laplace_prior = torch.exp(- lamb_.unsqueeze(-1) * beta.abs())
     if act == "laplace_exact":
         log_const = beta.shape[-1] * torch.log(0.5 * lamb_)
         log_prior = - lamb_ * beta.abs().sum(-1)
         log_prior_DE = log_prior + log_const
+    elif act == "sigmoid_offset":
+        log_prior = sigmoid_offset(beta, lamb_)
+        log_const = 0.0  # compute_norm_const(sigmoid_offset, lamb_, dim=beta.shape[-1]).sum(-1)
+        log_prior_DE = log_prior  # + log_const[...,None]
+    elif act == "softplus_offset":
+        log_prior = softplus_offset(beta, lamb_.unsqueeze(-1))
+        log_prior_DE = log_prior  # + 0.0 # implement constant
     elif act == "laplace_approx":
         log_const = beta.shape[-1] * compute_norm_const(laplace, lamb_)
         log_prior = - lamb_ * beta.abs().sum(-1)
@@ -164,7 +186,7 @@ def log_prior_act_laplace(beta, lamb, act, args):
         log_prior = - scalar * lamb_ * beta.abs().sum(-1)
         log_prior_DE = log_prior + log_const
     elif act == "identity":
-        log_prior_DE = torch.log(laplace_prior).sum(-1)
+        log_prior_DE = torch.log(laplace(beta, lamb_)).sum(-1)
         # print(lamb_)
         # print("lamb beta: ", - lamb_.unsqueeze(-1) * beta.abs())
         # print("log exp lamb beta 1: ", torch.log(torch.exp(- lamb_.unsqueeze(-1) * beta.abs()) + eps))
@@ -177,7 +199,7 @@ def log_prior_act_laplace(beta, lamb, act, args):
     elif act == "sigmoid":
         log_const = compute_norm_const(sigmoid, lamb_).sum(-1)
         log_prior = torch.log(sigmoid(beta, lamb_.unsqueeze(-1))).sum(-1)
-        log_prior_DE = log_prior +log_const
+        log_prior_DE = log_prior + log_const[...,None]
     elif act == "softplus":
         # log_const = beta.shape[-1] * compute_norm_const(softplus, lamb_)
         log_prior = torch.log(softplus(- lamb_.unsqueeze(-1), beta)).sum(-1)
@@ -200,6 +222,10 @@ def log_prior_act_laplace(beta, lamb, act, args):
     elif act[:3] == "exp":
         shift = float(act.split("_")[1])
         log_prior_DE = torch.log(torch.exp(laplace_prior+shift)-torch.exp(torch.tensor(shift))).sum(-1)
+    elif act[:3] == "log":
+        log_prior = torch.log((lamb_.unsqueeze(-1) * beta.abs()+1e-5).sum(-1))
+        log_const = 0.0
+        log_prior_DE = log_prior + log_const
     else:
         raise ValueError("invalid activation name")
 
@@ -216,19 +242,25 @@ def main():
     set_random_seeds(seed)
 
     args.log_cond = True
-    args.cond_min = 0
-    args.cond_max = 3
-    args.datadim = 10
-    n_samples = 50
-    X_tensor, y_tensor, X_np, y_np = synthetic_dataset(n=n_samples, p=args.datadim, seed=seed)
-
-    sns.pairplot(pd.DataFrame(X_np))
-    plt.show()
+    args.cond_min = -1
+    args.cond_max = 2
+    ratio_nonzero = 1
+    args.datadim = 5
+    n_samples = 7
+    nn_manifold = False  # TODO implement True -> needs correct flow.
 
     # the sigma parameter should be tuned depending on the noise in the dataset
     # however, for the final experiment it would be nicer to use a hyperprior (inverse gamma)
     # in that case the likelihood is not Gaussian anymore but rather the student t distribution
-    sigma_regr = 0.5 # this parameter needs to be tuned
+    sigma_regr = 2.0  # this parameter needs to be tuned
+
+    X_np, y_np, true_beta = generate_regression_dataset(n_samples=n_samples, n_features=args.datadim, n_non_zero=int(ratio_nonzero * args.datadim), noise_std=sigma_regr)
+    X_tensor = torch.tensor(X_np, device=args.device, dtype=torch.float)
+    y_tensor = torch.tensor(y_np, device=args.device, dtype=torch.float)
+    # X_tensor, y_tensor, X_np, y_np = synthetic_dataset(n=n_samples, p=args.datadim, seed=seed, eps=sigma_regr)
+
+    # sns.pairplot(pd.DataFrame(X_np))
+    # plt.show()
 
     alphas_lasso = np.logspace(args.cond_min, args.cond_max, 200)
     beta_sklearn = np.array(
@@ -243,21 +275,47 @@ def main():
     monotone_activations = ["laplace_exact", "power_4", "power_2", "power_1", "power_0.5", "power_0.25"]
     monotone_activations = ["tanh_20.0", "tanh_10.0", "tanh_1.0", "elu_20.0", "elu_10.0", "elu_1.0"]
 
-    monotonic_act = 'laplace_exact'
+    monotonic_act = "laplace_exact"
+    # monotonic_act = "power_0.01"
+    # monotonic_act = "power_128.0"
+    # monotonic_act = "sigmoid_offset"
+    # monotonic_act = "softplus_offset"
     target_distr = partial(log_unnorm_posterior, X=X_tensor, y=y_tensor, sigma=sigma_regr, act=monotonic_act)
 
     # build model
     # conditional flow on lambda
     args.architecture = "ambient"
-    flow = build_cond_flow_reverse(args, clamp_theta=False)
+    if nn_manifold:
+        flow = build_simple_cond_flow_l1_manifold(args, n_layers=3, n_hidden_features=64, n_context_features=64, clamp_theta=False)
+    else:
+        flow = build_cond_flow_reverse(args, clamp_theta=False)
 
     # conditional flow with fixed norm
     # flow = build_circular_cond_flow_l1_manifold(args)
 
     # train model
     flow.train()
-    flow, loss, loss_T = train_regression_cond(model=flow, log_unnorm_posterior=target_distr, args=args, manifold=False)
-    plot_loss(loss)
+    flow, loss, loss_T = train_regression_cond(model=flow, log_unnorm_posterior=target_distr, args=args, tn=0.05, manifold=False)
+    flow.eval()
+#    plot_loss(loss)
+    samples, cond, kl = generate_samples(flow, args, cond=True, log_unnorm_posterior=target_distr,
+                                         manifold=False, context_size=200, sample_size=4, n_iter=50)
+    plot_betas_lambda(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, sigma=sigma_regr, gt_only=False,
+                      min_bin=None, max_bin=None, n_bins=51, norm=1, conf=0.95, n_plots=1, gt='linear_regression', true_coeff=None)
+    chosen_norm = 2.0
+    beta_norms = np.linalg.norm(samples, axis=-1, ord=1).mean(-1)
+    beta_norms_mask = beta_norms > chosen_norm
+    bindex = beta_norms_mask.astype(int).sum(-1)
+    our_cond = cond[bindex-1]
+    print("our_cond", our_cond)
+
+    if nn_manifold:
+        flow = build_simple_cond_flow_l1_manifold(args, n_layers=3, n_hidden_features=64, n_context_features=64, clamp_theta=False)
+    else:
+        flow = build_cond_flow_reverse(args, clamp_theta=False)
+    flow.train()
+    flow, loss, loss_T = train_regression_cond(model=flow, log_unnorm_posterior=target_distr, args=args, tn=args.Tn, manifold=False)
+    flow.eval()
 
     # evaluate model
     samples, cond, kl = generate_samples(flow, args, cond=True, log_unnorm_posterior=target_distr,
@@ -265,7 +323,28 @@ def main():
     plot_betas_lambda(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, sigma=sigma_regr, gt_only=False,
                       min_bin=None, max_bin=None, n_bins=51, norm=1, conf=0.95, n_plots=1, gt='linear_regression', true_coeff=None)
     opt_cond = plot_marginal_likelihood(kl_sorted=kl, cond_sorted=cond, args=args)
+    print("optimal condition: ", opt_cond.item())
 
+    posterior_samples, _ = flow.sample_and_log_prob(100, context=np.log10(our_cond)*torch.ones(1,1,device=args.device))
+    posterior_samples = posterior_samples.detach().cpu().numpy()
+    posterior_samples = posterior_samples.reshape(-1, posterior_samples.shape[-1])
+    posterior_samples_cl = 0.0 * posterior_samples[:,0:1] + np.arange(posterior_samples.shape[-1])[None,:]
+    post_s_norm = np.linalg.norm(posterior_samples, axis=-1, ord=1)
+    ps = pd.DataFrame(data={'x_ind_coeff': posterior_samples_cl.reshape(-1), 'y': posterior_samples.reshape(-1)})
+    sns.boxplot(data=ps, x="x_ind_coeff", y="y")
+    plt.show()
+    ps2 = pd.DataFrame(data={'n_single_lambda': post_s_norm})
+    sns.boxplot(data=ps2, y="n_single_lambda")
+    plt.show()
+    sns.violinplot(data=ps2, x="n_single_lambda")
+    plt.show()
+    cond_norms = np.linalg.norm(samples, axis=-1, ord=1).mean(-1)
+    ps3 = pd.DataFrame(data={'x_cond': cond, 'avg norm of all samples': cond_norms})
+    sns.lineplot(data=ps3, x='x_cond', y='avg norm of all samples')
+    plt.grid()
+    plt.show()
+
+    print("done")
 
 if __name__ == "__main__":
     main()
