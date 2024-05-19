@@ -548,7 +548,7 @@ def build_simple_cond_flow_l1_manifold(args, n_layers, n_hidden_features, n_cont
     )
 
     #transformation_layers.append(PositiveL1ManifoldFlow(logabs_jacobian=args.logabs_jacobian))
-    transformation_layers.append(LpManifoldFlow(logabs_jacobian=args.logabs_jacobian, p=1, ))
+    transformation_layers.append(LpManifoldFlow(logabs_jacobian=args.logabs_jacobian, p=1, norm=args.norm))
 
     transformation_layers = transformation_layers[::-1]
     transform = CompositeTransform(transformation_layers)

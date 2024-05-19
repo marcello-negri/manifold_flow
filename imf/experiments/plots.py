@@ -5,6 +5,7 @@ import numpy as np
 import scipy as sp
 import seaborn as sns
 import matplotlib.pyplot as plt
+import pandas as pd
 
 from sklearn.decomposition import PCA
 from scipy.stats import gaussian_kde
@@ -825,10 +826,10 @@ def plot_clusters(samples, cond, cond_indices, n_clusters):
         plt.show()
 
 
-def plot_samples_3d(samples):
+def plot_samples_3d(samples, s=1, alpha=0.01):
     fig = plt.figure(figsize=(12, 12))
     ax = fig.add_subplot(projection='3d')
-    ax.scatter(samples[:,0], samples[:,1], samples[:,2], s=1, alpha=0.01)
+    ax.scatter(samples[:,0], samples[:,1], samples[:,2], s=s, alpha=alpha)
     plt.show()
 
 def plot_angles_3d(samples, args):
@@ -839,3 +840,35 @@ def plot_angles_3d(samples, args):
     axs[1].hist(samples_cat[:, 1].detach().cpu().numpy(),bins=50)
     axs[2].hist(samples_cat[:, 2].detach().cpu().numpy(),bins=50)
     plt.show()
+
+def plot_simplex(samples, dim_3, args, shift3to2=False, alpha=0.05, s=2):
+    d = samples.shape[-1]
+    assert samples.shape[-1] > (3 if dim_3 else 2)
+    samples = samples.reshape(-1,d)
+    proj = np.ones((d,d))
+    proj_svd = np.linalg.svd(proj)
+    simp_space = proj_svd.U[:,1:4] if dim_3 else proj_svd.U[:,1:3]
+    res = (simp_space.T)[None,] @ samples[...,None]
+    res = res[..., 0]
+
+    fig = plt.figure(figsize=(14, 14))
+    ax = fig.add_subplot(projection='3d' if dim_3 and not shift3to2 else None)
+
+    if dim_3:
+        if shift3to2:
+            resh = ((proj_svd.U[:,0:1].T)[None,] @ samples[...,None])[...,0]  # this results not in the norm in general, only for the l1 norm of the standard simplex
+            ax.scatter(res[:, 0], resh[:, 0], alpha=alpha, s=s)
+        else:
+            ax.scatter(res[:,0], res[:,1], res[:,2], alpha=alpha, s=s)
+    else:
+        ax.scatter(res[:,0], res[:,1], alpha=alpha, s=s)
+
+    plt.show()
+
+def to_file(arr, filename):
+    if isinstance(arr, np.ndarray):
+        df = pd.DataFrame(arr)
+    else:
+        df = pd.DataFrame(arr.detach().cpu().numpy())
+
+    df.to_csv(filename)

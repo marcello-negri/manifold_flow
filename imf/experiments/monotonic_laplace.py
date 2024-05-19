@@ -14,14 +14,14 @@ from sklearn.preprocessing import StandardScaler
 from functools import partial
 from imf.experiments.architecture import build_circular_cond_flow_l1_manifold, build_cond_flow_reverse, build_simple_cond_flow_l1_manifold
 from imf.experiments.utils_manifold import train_regression_cond, generate_samples
-from imf.experiments.plots import plot_betas_lambda_fixed_norm, plot_loss, plot_betas_lambda, plot_marginal_likelihood
+from imf.experiments.plots import plot_betas_lambda_fixed_norm, plot_loss, plot_betas_lambda, plot_marginal_likelihood, plot_samples_3d, plot_simplex, to_file
 from imf.experiments.datasets import generate_regression_dataset
 
 parser = argparse.ArgumentParser(description='Process some integers.')
 
 # TRAIN PARAMETERS
 parser.add_argument("--device", type=str, default="cuda", help='device for training the model')
-parser.add_argument('--epochs', metavar='e', type=int, default=400, help='number of epochs')
+parser.add_argument('--epochs', metavar='e', type=int, default=200, help='number of epochs')
 parser.add_argument('--lr', metavar='lr', type=float, default=1e-3, help='learning rate')
 parser.add_argument('--seed', metavar='s', type=int, default=1234, help='random seed')
 parser.add_argument("--overwrite", action="store_true", help="re-train and overwrite flow model")
@@ -100,24 +100,19 @@ def log_likelihood(beta, sigma, X, y):
 
     return log_lk + log_lk_const
 
-def log_prior_laplace(beta, lamb):
-
-    lamb_ = 10 ** lamb
-    log_prior_DE = - (lamb_) * beta.abs().sum(-1)
-    log_prior_const = beta.shape[-1] * torch.log(0.5 * lamb_)
-
-    return log_prior_DE + log_prior_const
-
 def compute_norm_const(pdf, lambdas, dim, n_points=10_000, extent=1.0):
     with torch.no_grad():
         x_points = torch.rand(lambdas.shape[0], n_points//lambdas.shape[0], dim, device=lambdas.device) * extent
         y_mesh = pdf(x_points, lambdas)
         integral = torch.logsumexp(y_mesh, dim=-1)
 
-        return integral.reshape(-1,1) + extent*dim - n_points
+        return - integral.sum(-1) + extent*dim - n_points
 
 def laplace(beta, lambdas):
-    return torch.exp(- torch.clamp(lambdas * beta.abs(), max=95))
+    return torch.exp(torch.clamp(llaplace(beta, lambdas), min=-95))
+
+def llaplace(beta, lambdas):
+    return - lambdas * beta.abs().sum(-1)
 
 def power(beta, lambdas, p):
     return laplace(beta, lambdas) ** p
@@ -136,21 +131,21 @@ def sigmoid(beta, lambdas):
 
 def sigmoid_offset(beta, lamb_):
     shape_ = beta.shape
-    beta_1 = laplace(beta, lamb_.unsqueeze(-1))
-    beta_ = beta_1[None,] - torch.tensor([0.0], device=beta.device)[:, None, None, None]  # , 4.0, 8.0, 8.1, 8.2, 23.0,23.5,24.0,24.5,25.0], device=beta.device)[:,None,None,None]
-    x = 1/0.0  # todo fix the code -> doesn't make sense with functions, log and activations anymore
-    vals = torch.logsumexp(torch.sigmoid(2.0 * beta_)-0.499, dim=0)
-    #vals = vals - torch.nn.functional.leaky_relu(-torch.log(beta_1) - 10.0, negative_slope=1e-3)
-    vals = vals.reshape(shape_)
-    return torch.log(vals).sum(-1)
+    beta_1 = - llaplace(beta, lamb_)
+    # prev [0.0,24.0] mult 12.0
+    beta_ = beta_1[None,] - torch.tensor([1.0, 12.0], device=beta.device)[:, None, None]
+    vals = 2.0 * (torch.sigmoid(8.0 * beta_) - 0.499).sum(0)
+    vals = vals + 0.1 * torch.nn.functional.relu(beta_1 - 8.0)
+    vals = vals.reshape(shape_[:-1])
+    return - vals
 
 def softplus_offset(beta, lamb_):
-    llap = - torch.clamp(lamb_ * beta.abs(), max=95)
-    spllap = - torch.nn.functional.softplus(- llap * 10.0 - 40.0)
-    return spllap.sum(-1)
+    llap = llaplace(beta, lamb_)  # - lamb_.unsqueeze(-1) * beta.abs()
+    spllap = - torch.nn.functional.softplus(- 80.0 * llap - 160.0)
+    return spllap
 
 def softplus(beta, lambdas):
-    return torch.nn.functional.softplus(- torch.clamp(lambdas * beta.abs(), max=95))-torch.log(torch.tensor(2.0))
+    return torch.nn.functional.softplus(llaplace(beta, lambdas))-torch.log(torch.tensor(2.0))
 
 def exp(beta, lambdas):
     return torch.exp(laplace(beta, lambdas))
@@ -167,26 +162,26 @@ def log_prior_act_laplace(beta, lamb, act, args):
     # laplace_prior = torch.exp(- lamb_.unsqueeze(-1) * beta.abs())
     if act == "laplace_exact":
         log_const = beta.shape[-1] * torch.log(0.5 * lamb_)
-        log_prior = - lamb_ * beta.abs().sum(-1)
+        log_prior = llaplace(beta, lamb_)
         log_prior_DE = log_prior + log_const
     elif act == "sigmoid_offset":
         log_prior = sigmoid_offset(beta, lamb_)
         log_const = 0.0  # compute_norm_const(sigmoid_offset, lamb_, dim=beta.shape[-1]).sum(-1)
         log_prior_DE = log_prior  # + log_const[...,None]
     elif act == "softplus_offset":
-        log_prior = softplus_offset(beta, lamb_.unsqueeze(-1))
+        log_prior = softplus_offset(beta, lamb_)
         log_prior_DE = log_prior  # + 0.0 # implement constant
     elif act == "laplace_approx":
-        log_const = beta.shape[-1] * compute_norm_const(laplace, lamb_)
-        log_prior = - lamb_ * beta.abs().sum(-1)
+        log_const = 0.0 # compute_norm_const(laplace, lamb_, dim=beta.shape[-1])
+        log_prior = llaplace(beta, lamb_)
         log_prior_DE = log_prior + log_const
     elif act[:5] == "power":
         scalar = float(act.split("_")[1])
-        log_const = beta.shape[-1] * scalar * torch.log(0.5 * lamb_)
-        log_prior = - scalar * lamb_ * beta.abs().sum(-1)
+        log_const = 0.0  # beta.shape[-1] * scalar * torch.log(0.5 * lamb_)
+        log_prior = - scalar * llaplace(beta, lamb_)
         log_prior_DE = log_prior + log_const
     elif act == "identity":
-        log_prior_DE = torch.log(laplace(beta, lamb_)).sum(-1)
+        log_prior_DE = torch.log(laplace(beta, lamb_))
         # print(lamb_)
         # print("lamb beta: ", - lamb_.unsqueeze(-1) * beta.abs())
         # print("log exp lamb beta 1: ", torch.log(torch.exp(- lamb_.unsqueeze(-1) * beta.abs()) + eps))
@@ -197,26 +192,26 @@ def log_prior_act_laplace(beta, lamb, act, args):
     #     m = torch.nn.LogSigmoid()
     #     log_prior_DE = (m(laplace_prior)-torch.log(torch.tensor(0.5))).sum(-1)
     elif act == "sigmoid":
-        log_const = compute_norm_const(sigmoid, lamb_).sum(-1)
+        log_const = 0.0  # compute_norm_const(sigmoid, lamb_, dim=beta.shape[-1]).sum(-1)
         log_prior = torch.log(sigmoid(beta, lamb_.unsqueeze(-1))).sum(-1)
-        log_prior_DE = log_prior + log_const[...,None]
+        log_prior_DE = log_prior + log_const
     elif act == "softplus":
-        # log_const = beta.shape[-1] * compute_norm_const(softplus, lamb_)
+        log_const = 0.0  # compute_norm_const(softplus, lamb_, dim=beta.shape[-1])
         log_prior = torch.log(softplus(- lamb_.unsqueeze(-1), beta)).sum(-1)
-        log_prior_DE = log_prior #+ log_const
+        log_prior_DE = log_prior + log_const
     elif act[:4] == "tanh":
         scale = float(act.split("_")[1])
-        log_const = beta.shape[-1] * compute_norm_const(partial(tanh, scale=scale), lamb_)
-        log_prior = torch.log( tanh(beta, lamb_.unsqueeze(-1), scale)).sum(-1)
+        log_const = 0.0  # compute_norm_const(partial(tanh, scale=scale), lamb_, dim=beta.shape[-1])
+        log_prior = torch.log(tanh(beta, lamb_.unsqueeze(-1), scale)).sum(-1)
         log_prior_DE = log_prior + log_const
     elif act[:3] == "elu":
         scale = float(act.split("_")[1])
-        log_const = beta.shape[-1] * compute_norm_const(partial(elu, scale=scale), lamb_)
+        log_const = 0.0  # compute_norm_const(partial(elu, scale=scale), lamb_, dim=beta.shape[-1])
         log_prior = torch.log(elu(beta, lamb_.unsqueeze(-1), scale)).sum(-1)
         log_prior_DE = log_prior + log_const
     elif act[:4] == "selu":
         scale = float(act.split("_")[1])
-        log_const = beta.shape[-1] * compute_norm_const(partial(selu, scale=scale), lamb_)
+        log_const = 0.0  # compute_norm_const(partial(selu, scale=scale), lamb_, dim=beta.shape[-1])
         log_prior = torch.log(selu(beta, lamb_.unsqueeze(-1), scale)).sum(-1)
         log_prior_DE = log_prior + log_const
     elif act[:3] == "exp":
@@ -231,9 +226,9 @@ def log_prior_act_laplace(beta, lamb, act, args):
 
     return log_prior_DE
 
-def log_unnorm_posterior(beta, cond, X, y, sigma, act):
-    log_likelihood_ = log_likelihood(beta, sigma, X, y)
-    log_prior_beta_ = log_prior_act_laplace(beta=beta, lamb=cond, act=act, args=args)
+def log_unnorm_posterior(beta, cond, X, y, sigma, act, use_l, use_p):
+    log_likelihood_ = log_likelihood(beta, sigma, X, y) if use_l else X.new_zeros((1))
+    log_prior_beta_ = log_prior_act_laplace(beta=beta, lamb=cond, act=act, args=args) if use_p else X.new_zeros((1))
 
     return log_likelihood_ + log_prior_beta_
 
@@ -241,18 +236,28 @@ def main():
     seed = 666
     set_random_seeds(seed)
 
+    if 0:
+        group_print(2)
+        exit(0)
+
     args.log_cond = True
     args.cond_min = -1
-    args.cond_max = 2
+    args.cond_max = 1
     ratio_nonzero = 1
     args.datadim = 5
     n_samples = 7
-    nn_manifold = False  # TODO implement True -> needs correct flow.
+    nn_manifold = False
+
+    args.use_likelihood = False
+    args.use_prior = True
+
+    chosen_norm = 2.0
+    use_map_norm_matching = False
 
     # the sigma parameter should be tuned depending on the noise in the dataset
     # however, for the final experiment it would be nicer to use a hyperprior (inverse gamma)
     # in that case the likelihood is not Gaussian anymore but rather the student t distribution
-    sigma_regr = 2.0  # this parameter needs to be tuned
+    sigma_regr = 4.0  # this parameter needs to be tuned
 
     X_np, y_np, true_beta = generate_regression_dataset(n_samples=n_samples, n_features=args.datadim, n_non_zero=int(ratio_nonzero * args.datadim), noise_std=sigma_regr)
     X_tensor = torch.tensor(X_np, device=args.device, dtype=torch.float)
@@ -272,20 +277,28 @@ def main():
     plt.show()
 
     # define target distribution
-    monotone_activations = ["laplace_exact", "power_4", "power_2", "power_1", "power_0.5", "power_0.25"]
-    monotone_activations = ["tanh_20.0", "tanh_10.0", "tanh_1.0", "elu_20.0", "elu_10.0", "elu_1.0"]
+    monotone_activations = ["laplace_exact", "power_100", "power_0.01", "power_4", "power_2", "power_1", "power_0.5", "power_0.25"]
+    monotone_activations = monotone_activations + ["tanh_20.0", "tanh_10.0", "tanh_1.0", "elu_20.0", "elu_10.0", "elu_1.0"]
+    monotone_activations = monotone_activations + ["sigmoid", "softplus", "softplus_offset"]  # "sigmoid_offset" still needs fixing
+    true_beta_post = []
+    true_beta_prior = []
+    true_beta_tensor = torch.tensor(true_beta, device=args.device, dtype=torch.float)
+    test_cond = X_tensor.new_ones(1) * (args.cond_min+args.cond_max)/2
+    for ac in monotone_activations:
+        true_beta_post.append(log_unnorm_posterior(beta=true_beta_tensor, cond=test_cond, X=X_tensor, y=y_tensor, sigma=sigma_regr, act=ac, use_l=args.use_likelihood, use_p=args.use_prior))
+        true_beta_prior.append(log_prior_act_laplace(beta=true_beta_tensor, lamb=test_cond, act=ac, args=args))
 
-    monotonic_act = "laplace_exact"
-    # monotonic_act = "power_0.01"
-    # monotonic_act = "power_128.0"
-    # monotonic_act = "sigmoid_offset"
-    # monotonic_act = "softplus_offset"
-    target_distr = partial(log_unnorm_posterior, X=X_tensor, y=y_tensor, sigma=sigma_regr, act=monotonic_act)
+    #monotonic_act = "laplace_exact"
+    #monotonic_act = "softplus_offset"
+    #monotonic_act = "sigmoid_offset"
+    target_distr = partial(log_unnorm_posterior, X=X_tensor, y=y_tensor, sigma=sigma_regr, act=monotonic_act, use_l=args.use_likelihood, use_p=args.use_prior)
+
 
     # build model
     # conditional flow on lambda
     args.architecture = "ambient"
     if nn_manifold:
+        args.norm = 1.0
         flow = build_simple_cond_flow_l1_manifold(args, n_layers=3, n_hidden_features=64, n_context_features=64, clamp_theta=False)
     else:
         flow = build_cond_flow_reverse(args, clamp_theta=False)
@@ -293,26 +306,27 @@ def main():
     # conditional flow with fixed norm
     # flow = build_circular_cond_flow_l1_manifold(args)
 
-    # train model
-    flow.train()
-    flow, loss, loss_T = train_regression_cond(model=flow, log_unnorm_posterior=target_distr, args=args, tn=0.05, manifold=False)
-    flow.eval()
-#    plot_loss(loss)
-    samples, cond, kl = generate_samples(flow, args, cond=True, log_unnorm_posterior=target_distr,
-                                         manifold=False, context_size=200, sample_size=4, n_iter=50)
-    plot_betas_lambda(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, sigma=sigma_regr, gt_only=False,
-                      min_bin=None, max_bin=None, n_bins=51, norm=1, conf=0.95, n_plots=1, gt='linear_regression', true_coeff=None)
-    chosen_norm = 2.0
-    beta_norms = np.linalg.norm(samples, axis=-1, ord=1).mean(-1)
-    beta_norms_mask = beta_norms > chosen_norm
-    bindex = beta_norms_mask.astype(int).sum(-1)
-    our_cond = cond[bindex-1]
-    print("our_cond", our_cond)
+    if use_map_norm_matching:
+        # train model
+        flow.train()
+        flow, loss, loss_T = train_regression_cond(model=flow, log_unnorm_posterior=target_distr, args=args, tn=0.01, manifold=False)
+        flow.eval()
+    #    plot_loss(loss)
+        samples, cond, kl = generate_samples(flow, args, cond=True, log_unnorm_posterior=target_distr,
+                                             manifold=False, context_size=200, sample_size=4, n_iter=50)
+        plot_betas_lambda(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, sigma=sigma_regr, gt_only=False,
+                          min_bin=None, max_bin=None, n_bins=51, norm=1, conf=0.95, n_plots=1, gt='linear_regression', true_coeff=None)
+        beta_norms = np.linalg.norm(samples, axis=-1, ord=1).mean(-1)
+        beta_norms_mask = beta_norms > chosen_norm
+        bindex = beta_norms_mask.astype(int).sum(-1)
+        our_cond = cond[bindex-1]
+        print("our_cond", our_cond)
 
-    if nn_manifold:
-        flow = build_simple_cond_flow_l1_manifold(args, n_layers=3, n_hidden_features=64, n_context_features=64, clamp_theta=False)
-    else:
-        flow = build_cond_flow_reverse(args, clamp_theta=False)
+        if nn_manifold:
+            flow = build_simple_cond_flow_l1_manifold(args, n_layers=3, n_hidden_features=64, n_context_features=64, clamp_theta=False)
+        else:
+            flow = build_cond_flow_reverse(args, clamp_theta=False)
+
     flow.train()
     flow, loss, loss_T = train_regression_cond(model=flow, log_unnorm_posterior=target_distr, args=args, tn=args.Tn, manifold=False)
     flow.eval()
@@ -325,11 +339,22 @@ def main():
     opt_cond = plot_marginal_likelihood(kl_sorted=kl, cond_sorted=cond, args=args)
     print("optimal condition: ", opt_cond.item())
 
-    posterior_samples, _ = flow.sample_and_log_prob(100, context=np.log10(our_cond)*torch.ones(1,1,device=args.device))
+    if not use_map_norm_matching:
+        beta_norms = np.linalg.norm(samples, axis=-1, ord=1).mean(-1)
+        beta_norms_mask = beta_norms > chosen_norm
+        bindex = beta_norms_mask.astype(int).sum(-1)
+        our_cond = cond[bindex - 1]
+        print("our_cond", our_cond)
+
+    posterior_samples, psslogprob = flow.sample_and_log_prob(1000, context=(np.log10(our_cond) if args.log_cond else our_cond)*torch.ones(1,1,device=args.device))
     posterior_samples = posterior_samples.detach().cpu().numpy()
     posterior_samples = posterior_samples.reshape(-1, posterior_samples.shape[-1])
     posterior_samples_cl = 0.0 * posterior_samples[:,0:1] + np.arange(posterior_samples.shape[-1])[None,:]
     post_s_norm = np.linalg.norm(posterior_samples, axis=-1, ord=1)
+    plot_samples_3d(posterior_samples, s=10, alpha=1.0)
+    plot_simplex(posterior_samples, dim_3=False, args=args, alpha=0.5, s=8)
+    plot_simplex(posterior_samples, dim_3=True, args=args, alpha=0.7, s=10)
+    plot_simplex(posterior_samples, dim_3=True, shift3to2=True, args=args, alpha=0.5, s=8)
     ps = pd.DataFrame(data={'x_ind_coeff': posterior_samples_cl.reshape(-1), 'y': posterior_samples.reshape(-1)})
     sns.boxplot(data=ps, x="x_ind_coeff", y="y")
     plt.show()
@@ -344,7 +369,40 @@ def main():
     plt.grid()
     plt.show()
 
+    to_file(posterior_samples, monotonic_act+".csv")
+
     print("done")
 
+def group_print(variant):
+    import os
+    files = [f for f in os.listdir("./") if f.endswith(".csv")]
+    names = [f[:-4] for f in files]
+    name_map = {"laplace_exact": "original", "sigmoid_offset": "longer tail", "softplus_offset": "shorter tail"}
+    names = [name_map[n] if n in name_map else n for n in names]
+
+    d = [pd.read_csv(f).loc[:, '0':] for f in files]
+    for di, n in zip(d, names):
+        di['s'] = n
+    dm = [di.melt(id_vars='s', var_name='coeff', value_name='value') for di in d]
+    d = pd.concat(dm)
+
+    match variant:
+        case "box" | 0:
+            sns.boxplot(x='coeff', y='value', hue='s', data=d)
+            plt.show()
+        case "box_no_outs" | 1:
+            sns.boxplot(x='coeff', y='value', hue='s', data=d, fliersize=0)
+            plt.show()
+        case "violin" | 2:
+            sns.violinplot(x='coeff', y='value', hue='s', data=d)
+            plt.show()
+
+
+monotonic_act = ""
 if __name__ == "__main__":
+    monotonic_act = "laplace_exact"
+    main()
+    monotonic_act = "softplus_offset"
+    main()
+    monotonic_act = "sigmoid_offset"
     main()
