@@ -21,7 +21,7 @@ parser = argparse.ArgumentParser(description='Process some integers.')
 
 # TRAIN PARAMETERS
 parser.add_argument("--device", type=str, default="cuda", help='device for training the model')
-parser.add_argument('--epochs', metavar='e', type=int, default=200, help='number of epochs')
+parser.add_argument('--epochs', metavar='e', type=int, default=2000, help='number of epochs')
 parser.add_argument('--lr', metavar='lr', type=float, default=1e-3, help='learning rate')
 parser.add_argument('--seed', metavar='s', type=int, default=1234, help='random seed')
 parser.add_argument("--overwrite", action="store_true", help="re-train and overwrite flow model")
@@ -141,8 +141,23 @@ def sigmoid_offset(beta, lamb_):
 
 def softplus_offset(beta, lamb_):
     llap = llaplace(beta, lamb_)  # - lamb_.unsqueeze(-1) * beta.abs()
-    spllap = - torch.nn.functional.softplus(- 80.0 * llap - 160.0)
-    return spllap
+    spllap = torch.nn.functional.softplus(- 200.0 * llap - 480.0)
+    return - spllap
+
+    # vals = torch.sign(spllap) * spllap ** 2
+
+    # spllap = - torch.nn.functional.softplus(- 80.0 * llap - 160.0)
+    # return spllap
+
+    # spllap1 = - torch.nn.functional.softplus(- 2.0 * llap)
+    # spllap2 = - torch.nn.functional.softplus(- 48.0 * llap - 96.0)
+    # vals = torch.sign(spllap2) * spllap2**2 + spllap1
+    # return vals
+
+def lrelu_offset(beta, lamb_):
+    llap = llaplace(beta, lamb_)  # - lamb_.unsqueeze(-1) * beta.abs()
+    spllap = torch.nn.functional.leaky_relu(- 200.0 * llap - 480)
+    return - spllap
 
 def softplus(beta, lambdas):
     return torch.nn.functional.softplus(llaplace(beta, lambdas))-torch.log(torch.tensor(2.0))
@@ -170,6 +185,9 @@ def log_prior_act_laplace(beta, lamb, act, args):
         log_prior_DE = log_prior  # + log_const[...,None]
     elif act == "softplus_offset":
         log_prior = softplus_offset(beta, lamb_)
+        log_prior_DE = log_prior  # + 0.0 # implement constant
+    elif act == "lrelu_offset":
+        log_prior = lrelu_offset(beta, lamb_)
         log_prior_DE = log_prior  # + 0.0 # implement constant
     elif act == "laplace_approx":
         log_const = 0.0 # compute_norm_const(laplace, lamb_, dim=beta.shape[-1])
@@ -216,7 +234,8 @@ def log_prior_act_laplace(beta, lamb, act, args):
         log_prior_DE = log_prior + log_const
     elif act[:3] == "exp":
         shift = float(act.split("_")[1])
-        log_prior_DE = torch.log(torch.exp(laplace_prior+shift)-torch.exp(torch.tensor(shift))).sum(-1)
+        log_prior = llaplace(beta, lamb_)
+        log_prior_DE = -torch.exp(torch.clamp(-log_prior+shift, max=6.0))
     elif act[:3] == "log":
         log_prior = torch.log((lamb_.unsqueeze(-1) * beta.abs()+1e-5).sum(-1))
         log_const = 0.0
@@ -236,23 +255,25 @@ def main():
     seed = 666
     set_random_seeds(seed)
 
-    if 0:
-        group_print(2)
+    if 1:
+        path_print(0)
+        group_print(1)
         exit(0)
 
     args.log_cond = True
-    args.cond_min = -1
-    args.cond_max = 1
+    args.cond_min = -2.5
+    args.cond_max = 1.5
     ratio_nonzero = 1
     args.datadim = 5
     n_samples = 7
-    nn_manifold = False
+    nn_manifold = on_manifold
 
-    args.use_likelihood = False
+    args.use_likelihood = True
     args.use_prior = True
 
-    chosen_norm = 2.0
-    use_map_norm_matching = False
+    chosen_norm = 5.0
+    use_map_norm_matching = True
+    map_its = 1000
 
     # the sigma parameter should be tuned depending on the noise in the dataset
     # however, for the final experiment it would be nicer to use a hyperprior (inverse gamma)
@@ -298,8 +319,12 @@ def main():
     # conditional flow on lambda
     args.architecture = "ambient"
     if nn_manifold:
-        args.norm = 1.0
-        flow = build_simple_cond_flow_l1_manifold(args, n_layers=3, n_hidden_features=64, n_context_features=64, clamp_theta=False)
+        args.norm = chosen_norm
+        #flow = build_simple_cond_flow_l1_manifold(args, n_layers=3, n_hidden_features=64, n_context_features=64, clamp_theta=False)
+        args.n_layers = 3
+        args.n_hidden_features = 64
+        args.n_context_features = 64
+        flow = build_circular_cond_flow_l1_manifold(args, star_like=True)
     else:
         flow = build_cond_flow_reverse(args, clamp_theta=False)
 
@@ -309,7 +334,10 @@ def main():
     if use_map_norm_matching:
         # train model
         flow.train()
+        iter_norm = args.epochs
+        args.epochs = map_its
         flow, loss, loss_T = train_regression_cond(model=flow, log_unnorm_posterior=target_distr, args=args, tn=0.01, manifold=False)
+        args.epochs = iter_norm
         flow.eval()
     #    plot_loss(loss)
         samples, cond, kl = generate_samples(flow, args, cond=True, log_unnorm_posterior=target_distr,
@@ -323,7 +351,12 @@ def main():
         print("our_cond", our_cond)
 
         if nn_manifold:
-            flow = build_simple_cond_flow_l1_manifold(args, n_layers=3, n_hidden_features=64, n_context_features=64, clamp_theta=False)
+            args.norm = chosen_norm
+            # flow = build_simple_cond_flow_l1_manifold(args, n_layers=3, n_hidden_features=64, n_context_features=64, clamp_theta=False)
+            args.n_layers = 3
+            args.n_hidden_features = 64
+            args.n_context_features = 64
+            flow = build_circular_cond_flow_l1_manifold(args, star_like=True)
         else:
             flow = build_cond_flow_reverse(args, clamp_theta=False)
 
@@ -339,6 +372,12 @@ def main():
     opt_cond = plot_marginal_likelihood(kl_sorted=kl, cond_sorted=cond, args=args)
     print("optimal condition: ", opt_cond.item())
 
+    out_name = ("mani_" if nn_manifold else "") + monotonic_act + ".csv"
+    to_file(samples.reshape(-1,args.datadim), "all_" + out_name)
+    to_file(cond, "call_" + out_name)
+    to_file(X_np, "xnp_" + out_name)
+    to_file(y_np, "ynp_" + out_name)
+
     if not use_map_norm_matching:
         beta_norms = np.linalg.norm(samples, axis=-1, ord=1).mean(-1)
         beta_norms_mask = beta_norms > chosen_norm
@@ -351,16 +390,16 @@ def main():
     posterior_samples = posterior_samples.reshape(-1, posterior_samples.shape[-1])
     posterior_samples_cl = 0.0 * posterior_samples[:,0:1] + np.arange(posterior_samples.shape[-1])[None,:]
     post_s_norm = np.linalg.norm(posterior_samples, axis=-1, ord=1)
-    plot_samples_3d(posterior_samples, s=10, alpha=1.0)
-    plot_simplex(posterior_samples, dim_3=False, args=args, alpha=0.5, s=8)
-    plot_simplex(posterior_samples, dim_3=True, args=args, alpha=0.7, s=10)
-    plot_simplex(posterior_samples, dim_3=True, shift3to2=True, args=args, alpha=0.5, s=8)
+    # plot_samples_3d(posterior_samples, s=10, alpha=1.0)
+    # plot_simplex(posterior_samples, dim_3=False, args=args, alpha=0.5, s=8)
+    # plot_simplex(posterior_samples, dim_3=True, args=args, alpha=0.7, s=10)
+    # plot_simplex(posterior_samples, dim_3=True, shift3to2=True, args=args, alpha=0.5, s=8)
     ps = pd.DataFrame(data={'x_ind_coeff': posterior_samples_cl.reshape(-1), 'y': posterior_samples.reshape(-1)})
     sns.boxplot(data=ps, x="x_ind_coeff", y="y")
     plt.show()
     ps2 = pd.DataFrame(data={'n_single_lambda': post_s_norm})
-    sns.boxplot(data=ps2, y="n_single_lambda")
-    plt.show()
+    # sns.boxplot(data=ps2, y="n_single_lambda")
+    # plt.show()
     sns.violinplot(data=ps2, x="n_single_lambda")
     plt.show()
     cond_norms = np.linalg.norm(samples, axis=-1, ord=1).mean(-1)
@@ -369,15 +408,76 @@ def main():
     plt.grid()
     plt.show()
 
-    to_file(posterior_samples, monotonic_act+".csv")
+    to_file(posterior_samples, "fnorm_" + out_name)
 
     print("done")
 
+
+name_map = {"laplace_exact": "orig", "sigmoid_offset": "long T", "softplus_offset": "short T",
+                "mani_laplace_exact": "obj", "lrelu_offset": "short l T", "exp_0": "exp"}
+def path_print(variant):
+    import os
+    from mpl_toolkits.mplot3d import Axes3D
+    files = [f for f in os.listdir("./") if f.endswith(".csv") and f.startswith("all_")]
+    names = [f[4:-4] for f in files]
+
+    sigma_regr = 4.0
+    d = [pd.read_csv(f).loc[:, '0':] for f in files]
+    dms = {}
+    for di, on in zip(d, names):
+        n = name_map[on]
+        print(n)
+        samples = di.to_numpy().reshape(500,100,5)
+        cond = pd.read_csv("call_" + on + ".csv").loc[:, '0':].to_numpy()[...,0]
+        X_np = pd.read_csv("xnp_" + on + ".csv").loc[:, '0':].to_numpy()
+        y_np = pd.read_csv("ynp_" + on + ".csv").loc[:, '0':].to_numpy()[...,0]
+        di['s'] = n
+        dm = di.melt(id_vars='s', var_name='coeff', value_name='value')
+        if "obj" in n:
+            dms[n] = samples
+        else:
+            pdt = pd.DataFrame(np.linalg.norm(samples, axis=-1, ord=1).mean(-1))
+            dms[n] = pdt.melt(value_name="norm")
+            dms[n]["source"] = n
+
+        of = "data/out/" + n
+        match variant:
+            case "trace_norm" | 0:
+                plot_betas_lambda(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, sigma=sigma_regr, gt_only=False,
+                                  min_bin=None, max_bin=None, n_bins=51, norm=1, conf=0.95, n_plots=1,
+                                  gt='linear_regression', true_coeff=None, name=of+"_betas")
+                sns.boxplot(data=dm, y="coeff", x="value", fliersize=0)
+                plt.title(n)
+                plt.savefig(of + "_norms.pdf", format='pdf')
+                plt.show()
+
+    of = "data/out/"
+    match variant:
+        case "trace_norm" | 0:
+            plt.figure(figsize=(3, 5))
+            dma = pd.concat([dm for k, dm in dms.items() if not ("obj" in k)], ignore_index=True)
+            sns.violinplot(data=dma, x="norm", y="source")
+            plt.savefig(of + "all_std_norms.pdf", format='pdf')
+            plt.show()
+
+            dm = dms["obj"]
+            sns.set(style="whitegrid")
+            fig = plt.figure(figsize=(5,5))
+            ax = Axes3D(fig)
+
+            dm = dm.reshape(-1,5)
+            dat = dm[:,:3]
+            # this is a hacky way to show 5 dim samples on the manifold in 3 dim space
+            dat = np.linalg.norm(dm, axis=-1, ord=1, keepdims=True) * dat / np.linalg.norm(dat, axis=-1, ord=1, keepdims=True)
+            ax.scatter(dat[:,0], dat[:,1], dat[:,2], c=dat[:,2], cmap='viridis')
+            plt.savefig(of + "surface_mani.pdf", format='pdf')
+            plt.show()
+
+
 def group_print(variant):
     import os
-    files = [f for f in os.listdir("./") if f.endswith(".csv")]
-    names = [f[:-4] for f in files]
-    name_map = {"laplace_exact": "original", "sigmoid_offset": "longer tail", "softplus_offset": "shorter tail"}
+    files = [f for f in os.listdir("./") if f.endswith(".csv") and f.startswith("fnorm")]
+    names = [f[6:-4] for f in files]
     names = [name_map[n] if n in name_map else n for n in names]
 
     d = [pd.read_csv(f).loc[:, '0':] for f in files]
@@ -386,23 +486,37 @@ def group_print(variant):
     dm = [di.melt(id_vars='s', var_name='coeff', value_name='value') for di in d]
     d = pd.concat(dm)
 
+    of = "data/out/"
     match variant:
         case "box" | 0:
             sns.boxplot(x='coeff', y='value', hue='s', data=d)
             plt.show()
         case "box_no_outs" | 1:
-            sns.boxplot(x='coeff', y='value', hue='s', data=d, fliersize=0)
+            plt.figure(figsize=(4, 4))
+            sns.boxplot(x='coeff', y='value', hue='s', data=d, fliersize=0, gap=0)
+            #plt.tight_layout()
+            #plt.ylim(-3,3)
+            plt.legend(ncol=2)
+            plt.savefig(of + "compare.pdf", format='pdf')
             plt.show()
         case "violin" | 2:
             sns.violinplot(x='coeff', y='value', hue='s', data=d)
+            #plt.ylim(-5,5)
             plt.show()
 
 
 monotonic_act = ""
+on_manifold = True
 if __name__ == "__main__":
     monotonic_act = "laplace_exact"
     main()
-    monotonic_act = "softplus_offset"
-    main()
-    monotonic_act = "sigmoid_offset"
-    main()
+    # on_manifold = False
+    # main()
+    # monotonic_act = "softplus_offset"
+    # main()
+    # monotonic_act = "lrelu_offset"
+    # main()
+    # monotonic_act = "sigmoid_offset"
+    # main()
+    # monotonic_act = "exp_0"
+    # main()

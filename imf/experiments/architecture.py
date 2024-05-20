@@ -562,12 +562,12 @@ def build_simple_cond_flow_l1_manifold(args, n_layers, n_hidden_features, n_cont
 
     return flow
 
-def build_circular_cond_flow_l1_manifold(args):
+def build_circular_cond_flow_l1_manifold(args, star_like=False):
     # torch_one = torch.ones(1, device=args.device)
     # base_dist = Uniform(shape=[args.datadim - 1], low=torch_one * 0, high=torch_one * 0.5 * torch.pi)
     # base_dist = MultimodalUniform(shape=[flow_dim - 1], low=-torch_one, high=torch_one, n_modes=2)
     # base_dist = UniformSphere(shape=[args.datadim - 1], all_positive=True)
-    base_dist = UniformSimplex(shape=[args.datadim - 1], extend_star_like=False)
+    base_dist = UniformSimplex(shape=[args.datadim - 1], extend_star_like=star_like)
     # n_modes = 20
     # base_dist = MOG(means=torch.rand((n_modes, flow_dim-1), device=device)*2-1,
     #                 stds=torch.ones((n_modes, flow_dim-1), device=device)*0.05, low=-1, high=1)
@@ -580,7 +580,9 @@ def build_circular_cond_flow_l1_manifold(args):
 
     transformation_layers.append(
         InverseTransform(
-            CompositeTransform([ScalarScale(scale=4 / torch.pi, trainable=False, eps=0),
+            CompositeTransform([
+                                ScaleLastDim(scale=0.5 if star_like else 1.0),
+                                ScalarScale(scale=4 / torch.pi if not star_like else 2 / torch.pi, trainable=False, eps=0),
                                 ScalarShift(shift=-1, trainable=False)
                                 ])
         )
@@ -601,14 +603,18 @@ def build_circular_cond_flow_l1_manifold(args):
         InverseTransform(
             CompositeTransform([ScalarScale(scale=1 - 1e-4, trainable=False, eps=0),
                                 ScalarShift(shift=1., trainable=False),
-                                ScalarScale(scale=0.25 * torch.pi, trainable=False, eps=0)
+                                ScalarScale(scale=0.25 * torch.pi if not star_like else 0.5 * torch.pi, trainable=False, eps=0),
+                                ScaleLastDim(scale=2.0 if star_like else 1.0),
                                 ])
         )
     )
 
     #transformation_layers.append(InverseTransform(ClampedThetaPositive(eps=1e-10)))
 
-    transformation_layers.append(PositiveL1ManifoldFlow(logabs_jacobian=args.logabs_jacobian))
+    if not star_like:
+        transformation_layers.append(PositiveL1ManifoldFlow(logabs_jacobian=args.logabs_jacobian))
+    else:
+        transformation_layers.append(LpManifoldFlow(logabs_jacobian=args.logabs_jacobian, p=1, norm=args.norm))
 
     transformation_layers = transformation_layers[::-1]
     transform = CompositeTransform(transformation_layers)
