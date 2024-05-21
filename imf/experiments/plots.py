@@ -432,9 +432,11 @@ from sklearn.linear_model import LinearRegression, Lasso, Ridge, LogisticRegress
 def plot_lines_gt (x_gt, y_gt, dim, n_plots, x_model=None, y_mean_model=None, y_l_model=None, y_r_model=None, log_scale=True, norm=1, name_file=None, coarse=1, true_coeff=None, x_label='norm'):
     n_lines = dim // n_plots
     clrs = sns.color_palette("husl", n_lines)
-    for i in range(n_plots):
-        fig, ax = plt.subplots(figsize=(14, 14))
-        with sns.axes_style("darkgrid"):
+    with sns.axes_style("whitegrid"):
+        sns.set_context('talk')
+        for i in range(n_plots):
+            fig, ax = plt.subplots(figsize=(14, 14))
+
             for j in range(i * n_lines, (i + 1) * n_lines):
                 if j == dim:
                     break
@@ -446,20 +448,20 @@ def plot_lines_gt (x_gt, y_gt, dim, n_plots, x_model=None, y_mean_model=None, y_
                 if true_coeff is not None:
                     if true_coeff[j]!=0:
                         ax.axhline(y=true_coeff[j], xmin=x_gt[::coarse].min(), xmax=x_gt[::coarse].max(), c=color, alpha=0.7, linewidth=1.5, linestyle=':')
-        if x_label == "norm":
-            plt.xlabel(r"$||\beta||_{%s}$" % norm, fontsize=18)
-        elif x_label == "lambda":
-            plt.xlabel(r"$\lambda$", fontsize=18)
-        else:
-            raise ValueError("x_label must be either 'norm' or 'lambda'")
-        plt.ylabel(r'$\beta$', fontsize=18)
-        plt.locator_params(axis='y', nbins=4)
-        plt.xticks(fontsize=12)
-        plt.yticks(fontsize=12)
-        if log_scale: plt.xscale('log')
-        if name_file is not None:
-            plt.savefig(f"{name_file}_{j}.pdf", bbox_inches='tight')
-        plt.show()
+            if x_label == "norm":
+                plt.xlabel(r"$||\beta||_{%s}$" % norm, fontsize=18)
+            elif x_label == "lambda":
+                plt.xlabel(r"$\lambda$", fontsize=18)
+            else:
+                raise ValueError("x_label must be either 'norm' or 'lambda'")
+            plt.ylabel(r'$\beta$', fontsize=18)
+            plt.locator_params(axis='y', nbins=4)
+            # plt.xticks(fontsize=12)
+            # plt.yticks(fontsize=12)
+            if log_scale: plt.xscale('log')
+            if name_file is not None:
+                plt.savefig(f"{name_file}_{j}.pdf", bbox_inches='tight')
+            plt.show()
 
 def plot_betas_lambda(samples, lambdas, X_np, y_np, sigma, gt_only=False, min_bin=None, max_bin=None, n_bins=51, norm=1, conf=0.95, n_plots=1, gt='linear_regression', folder_name='./', true_coeff=None, name=None):
 
@@ -512,7 +514,7 @@ def plot_betas_lambda(samples, lambdas, X_np, y_np, sigma, gt_only=False, min_bi
     try:
         bins_midpoint, bin_means, bin_l, bin_r, samples_norm = refine_samples_by_norm(all_samples, norm, min_bin, max_bin, n_bins, conf=conf)
         plot_lines_gt(x_model=bins_midpoint, y_mean_model=bin_means, y_l_model=bin_l, y_r_model=bin_r, x_gt=sklearn_norm,
-                  y_gt=sklearn_sorted, dim=X_np.shape[-1], n_plots=n_plots, log_scale=False, norm=norm, name_file=name+"_n", true_coeff=true_coeff)
+                  y_gt=sklearn_sorted, dim=X_np.shape[-1], n_plots=n_plots, log_scale=False, norm=norm, name_file=name+"_n" if name is not None else None, true_coeff=true_coeff)
     except:
         samples_norm, bin_l, bin_means, bin_r = None, None, None, None
         pass
@@ -523,7 +525,7 @@ def plot_betas_lambda(samples, lambdas, X_np, y_np, sigma, gt_only=False, min_bi
     mean_norms, samples_mean, samples_l, samples_r = refine_samples_by_mean_norm(samples, norm, conf)
 
     plot_lines_gt(x_model=mean_norms, y_mean_model=samples_mean, y_l_model=samples_l, y_r_model=samples_r, x_gt=sklearn_norm,
-                  y_gt=sklearn_sorted, dim=X_np.shape[-1], n_plots=n_plots, log_scale=False, norm=norm, name_file=name+"_nn", true_coeff=true_coeff)
+                  y_gt=sklearn_sorted, dim=X_np.shape[-1], n_plots=n_plots, log_scale=False, norm=norm, name_file=name+"_nn" if name is not None else None, true_coeff=true_coeff)
 
 
 
