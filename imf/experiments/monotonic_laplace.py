@@ -21,7 +21,7 @@ parser = argparse.ArgumentParser(description='Process some integers.')
 
 # TRAIN PARAMETERS
 parser.add_argument("--device", type=str, default="cuda", help='device for training the model')
-parser.add_argument('--epochs', metavar='e', type=int, default=4000, help='number of epochs')
+parser.add_argument('--epochs', metavar='e', type=int, default=2000, help='number of epochs')
 parser.add_argument('--lr', metavar='lr', type=float, default=1e-3, help='learning rate')
 parser.add_argument('--seed', metavar='s', type=int, default=1234, help='random seed')
 parser.add_argument("--overwrite", action="store_true", help="re-train and overwrite flow model")
@@ -159,6 +159,16 @@ def lrelu_offset(beta, lamb_):
     spllap = torch.nn.functional.leaky_relu(- 200.0 * llap - 480)
     return - spllap
 
+def root_offset(beta, lamb_):
+    llap = llaplace(beta, lamb_)
+    spllap = - torch.sqrt(-llap+1)
+    return spllap
+
+def square_offset(beta, lamb_):
+    llap = llaplace(beta, lamb_)
+    spllap = - torch.pow(-llap+1.0, 4)
+    return spllap
+
 def softplus(beta, lambdas):
     return torch.nn.functional.softplus(llaplace(beta, lambdas))-torch.log(torch.tensor(2.0))
 
@@ -188,6 +198,12 @@ def log_prior_act_laplace(beta, lamb, act, args):
         log_prior_DE = log_prior  # + 0.0 # implement constant
     elif act == "lrelu_offset":
         log_prior = lrelu_offset(beta, lamb_)
+        log_prior_DE = log_prior  # + 0.0 # implement constant
+    elif act == "root_offset":
+        log_prior = root_offset(beta, lamb_)
+        log_prior_DE = log_prior  # + 0.0 # implement constant
+    elif act == "square_offset":
+        log_prior = square_offset(beta, lamb_)
         log_prior_DE = log_prior  # + 0.0 # implement constant
     elif act == "laplace_approx":
         log_const = 0.0 # compute_norm_const(laplace, lamb_, dim=beta.shape[-1])
@@ -261,8 +277,16 @@ def main():
         exit(0)
 
     args.log_cond = True
-    args.cond_min = -2.5
-    args.cond_max = 1.5
+    match monotonic_act:
+        case "square_offset":
+            args.cond_min = -3.5
+            args.cond_max = 0.2
+        case "root_offset":
+            args.cond_min = -2.
+            args.cond_max = 2.7
+        case "laplace_exact":
+            args.cond_min = -2.5
+            args.cond_max = 1.0
     ratio_nonzero = 1
     args.datadim = 5
     n_samples = 7
@@ -341,7 +365,7 @@ def main():
         flow.eval()
     #    plot_loss(loss)
         samples, cond, kl = generate_samples(flow, args, cond=True, log_unnorm_posterior=target_distr,
-                                             manifold=False, context_size=2000, sample_size=5, n_iter=50)
+                                             manifold=False, context_size=2000, sample_size=5, n_iter=1)
         plot_betas_lambda(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, sigma=sigma_regr, gt_only=False,
                           min_bin=None, max_bin=None, n_bins=51, norm=1, conf=0.95, n_plots=1, gt='linear_regression', true_coeff=None)
         beta_norms = np.linalg.norm(samples, axis=-1, ord=1).mean(-1)
@@ -368,7 +392,7 @@ def main():
 
     # evaluate model
     samples, cond, kl = generate_samples(flow, args, cond=True, log_unnorm_posterior=target_distr,
-                                         manifold=False, context_size=10, sample_size=500, n_iter=100)
+                                         manifold=False, context_size=10, sample_size=1000, n_iter=20)
     plot_betas_lambda(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, sigma=sigma_regr, gt_only=False,
                       min_bin=None, max_bin=None, n_bins=51, norm=1, conf=0.95, n_plots=1, gt='linear_regression', true_coeff=None)
     opt_cond = plot_marginal_likelihood(kl_sorted=kl, cond_sorted=cond, args=args)
@@ -414,48 +438,92 @@ def main():
     print("done")
 
 
-name_map = {"laplace_exact": "laplace", "sigmoid_offset": "long tail", "softplus_offset": "short tail",
-                "mani_laplace_exact": "objective", "lrelu_offset": "short tail", "exp_0": "exp"}
+name_map = {"laplace_exact": "laplace", "square_offset": "square lap",
+                "mani_laplace_exact": "objective", "root_offset": "root lap"}
 def path_print(variant):
     import os
     from mpl_toolkits.mplot3d.art3d import Poly3DCollection
     from mpl_toolkits.mplot3d import Axes3D
-    files = [f for f in os.listdir("./") if f.endswith(".csv") and f.startswith("all_")]
-    names = [f[4:-4] for f in files]
+    files = [f for f in os.listdir("./") if f.endswith(".csv") and (f.startswith("all_") or f.startswith("mapall_"))]
+    names = [f[4:-4] if f.startswith("all_") else "m"+f[7:-4] for f in files]
 
     sigma_regr = 4.0
     d = [pd.read_csv(f).loc[:, '0':] for f in files]
     dms = {}
     dma = []
-    for di, on in zip(d, names):
+    name_d_dic = dict(zip(names, d))
+    for di, on, map_data in zip(d, names, [f.startswith("mapall_") for f in files]):
+        if map_data:
+            on = on[1:]
         n = name_map[on]
-        print(n)
-        samples = di.to_numpy().reshape(1000,-1,5) if not "map" in n else di.to_numpy().reshape(10000,-1,5)
-        cond = pd.read_csv("call_" + on + ".csv").loc[:, '0':].to_numpy()[...,0]
+        print(n if not map_data else "map " + n)
+        samples = di.to_numpy().reshape(200,-1,5) if not map_data else di.to_numpy().reshape(2000,-1,5)
+        cond = pd.read_csv(("call_" if not map_data else "mapcall_") + on + ".csv").loc[:, '0':].to_numpy()[...,0]
         X_np = pd.read_csv("xnp_" + on + ".csv").loc[:, '0':].to_numpy()
         y_np = pd.read_csv("ynp_" + on + ".csv").loc[:, '0':].to_numpy()[...,0]
+        of = "data/out/" + n
         di['s'] = n
         dm = di.melt(id_vars='s', var_name='coeff', value_name='value')
         if name_map["mani_laplace_exact"] in n:
             dms[n] = samples
-        else:
+        elif not map_data:
             normmeans = np.linalg.norm(samples, axis=-1, ord=1).mean(-1)
             pdt = pd.DataFrame(normmeans)
             dms[n] = pdt.melt(value_name="norm")
             dms[n]["source"] = n
-            norms_mask = normmeans > 5.0
-            index = norms_mask.astype(int).sum(-1)
+            mapsamples = name_d_dic["m" + on].to_numpy().reshape(2000, -1, 5)
+            mapnormmeans = np.linalg.norm(mapsamples, axis=-1, ord=1).mean(-1)
+            norms_mask = mapnormmeans > 5.0
+            mapindex = norms_mask.astype(int).sum(-1)
+            mapcond = pd.read_csv("mapcall_" + on + ".csv").loc[:, '0':].to_numpy()[...,0]
+            targetcond = mapcond[mapindex]
+            index = (cond < targetcond).astype(int).sum(-1)
             pda = pd.DataFrame(np.linalg.norm(samples[index], axis=-1, ord=1))
             pda = pda.melt(value_name="norm")
             pda["source"] = n
             dma.append(pda)
 
-        of = "data/out/" + n
+            ssamples = samples[index]
+            sns.set(style="whitegrid")
+            fig = plt.figure(figsize=(5, 5))
+            ax = fig.add_subplot(111, projection='3d')
+            ssamples = ssamples.reshape(-1, 5)
+            dat = ssamples[:, :3]
+            # this is a hacky way to show 5 dim samples on the manifold in 3 dim space
+            dat = np.linalg.norm(ssamples, axis=-1, ord=1, keepdims=True) * dat / np.linalg.norm(dat, axis=-1, ord=1,
+                                                                                           keepdims=True)
+            # the norm manifold
+            vertices = 5.0 * np.array(
+                [[0., 0., 1.], [1., 0., 0.], [0., 1., 0.], [-1., 0., 0.], [0., -1., 0.], [0., 0., -1.]])
+            faces = [[vertices[0], vertices[1], vertices[2]],
+                     [vertices[0], vertices[2], vertices[3]],
+                     [vertices[0], vertices[3], vertices[4]],
+                     [vertices[0], vertices[4], vertices[1]],
+                     [vertices[5], vertices[1], vertices[2]],
+                     [vertices[5], vertices[2], vertices[3]],
+                     [vertices[5], vertices[3], vertices[4]],
+                     [vertices[5], vertices[4], vertices[1]]]
+
+            # Define the faces of the diamond
+            poly3d = Poly3DCollection(faces, facecolors='#789cb330', linewidths=0)  # 1, edgecolors='#789cb390')
+            ax.add_collection3d(poly3d)
+            ax.plot([0, 0, 0, 5, 0], [-5, 0, 5, 0, -5], [0, 5, 0, 0, 0], c='#789cb390', zorder=1)
+            ax.plot([0, -5, 0, 5, 0, 0], [-5, 0, 0, 0, 0, -5], [0, 0, 5, 0, -5, 0], c='#789cb390', zorder=1)
+
+            # the samples of the norm
+            ax.scatter(dat[:, 1], -dat[:, 0], -dat[:, 2], c=np.abs(dat[:, 0]) + np.abs(dat[:, 2]),
+                       cmap='Blues', s=8, zorder=5, marker="o", edgecolors='none')
+            ax.grid(False)
+            ax._axis3don = False
+
+            plt.savefig(of + "_with_mani.pdf", format='pdf')
+            plt.show()
+
         match variant:
-            case "trace_norm" | 1:
+            case "trace_norm" | 0:
                 plot_betas_lambda(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, sigma=sigma_regr, gt_only=False,
                                   min_bin=None, max_bin=None, n_bins=51, norm=1, conf=0.95, n_plots=1,
-                                  gt='linear_regression', true_coeff=None, name=of+"_betas")
+                                  gt='linear_regression', true_coeff=None, name=of+("_betas" if not map_data else "_betas_map"))
                 sns.boxplot(data=dm, y="coeff", x="value", fliersize=0)
                 plt.title(n)
                 plt.savefig(of + "_norms.pdf", format='pdf')
@@ -464,11 +532,12 @@ def path_print(variant):
     of = "data/out/"
     match variant:
         case "trace_norm" | 0:
-            plt.figure(figsize=(3, 5))
+            plt.figure(figsize=(4, 7))
             # dma = pd.concat([dm for k, dm in dms.items() if not (name_map["mani_laplace_exact"] in k)], ignore_index=True)
             dma = [dma[1], dma[2], dma[0]]
             dma = pd.concat(dma, ignore_index=True)
             sns.violinplot(data=dma, x="norm", y="source")
+            plt.tight_layout()
             plt.savefig(of + "all_std_norms.pdf", format='pdf')
             plt.show()
 
@@ -509,13 +578,15 @@ def path_print(variant):
 
 def group_print(variant):
     import os
-    files = [f for f in os.listdir("./") if f.endswith(".csv") and f.startswith("fnorm")]
+    with_obj = False
+    files = [f for f in os.listdir("./") if f.endswith(".csv") and f.startswith("fnorm") and (with_obj or not "mani" in f)]
     names = [f[6:-4] for f in files]
     names = [name_map[n] if n in name_map else n for n in names]
 
     d = [pd.read_csv(f).loc[:, '0':] for f in files]
     for di, n in zip(d, names):
         di['s'] = n
+    d = [d[2],d[0],d[1]]
     dm = [di.melt(id_vars='s', var_name='coeff', value_name='value') for di in d]
     d = pd.concat(dm)
 
@@ -526,19 +597,24 @@ def group_print(variant):
             plt.show()
         case "box_no_outs" | 1:
             palette_tab10 = sns.color_palette("tab10", 10)
-            palette_blue = list(sns.light_palette(palette_tab10[0], n_colors=6))[::-1][:3]
+            palette_blue = list(sns.light_palette(palette_tab10[0], n_colors=3))[::-1][:3]
             palette_salmon = list(sns.light_palette(palette_tab10[1], n_colors=6))[::-1][:1]
-            palette = palette_blue + palette_salmon
-            pal = {name_map["laplace_exact"]: palette[0], name_map["lrelu_offset"]: palette[1],
-                   name_map["sigmoid_offset"]: palette[2], name_map["mani_laplace_exact"]: palette[3]}
+            palette = palette_blue + palette_salmon if with_obj else palette_blue
+            if with_obj:
+                pal = {name_map["laplace_exact"]: palette[0], name_map["square_offset"]: palette[1],
+                       name_map["root_offset"]: palette[2], name_map["mani_laplace_exact"]: palette[3]}
+            else:
+                pal = {name_map["laplace_exact"]: palette[0], name_map["square_offset"]: palette[1],
+                       name_map["root_offset"]: palette[2]}#, name_map["mani_laplace_exact"]: palette[3]}
             plt.figure(figsize=(8, 4))
             plt.rcParams['font.family'] = 'serif'
             plt.rcParams['font.serif'] = ['Computer Modern']
             sns.set_style("whitegrid")
             sns.set_context("notebook", font_scale=2.0)
-            sns.boxplot(x='coeff', y='value', hue='s', palette=pal, data=d, fliersize=0, gap=0)
-            sns.set(font_scale=1.315)
-            plt.legend(ncol=4, loc="upper left")
+            # , palette=pal
+            sns.boxplot(x='coeff', y='value', hue='s', palette="bright", data=d, fliersize=0)
+            sns.set(font_scale=1.7)
+            plt.legend(ncol=4 if with_obj else 3, loc="upper left")
             plt.rcParams['font.sans-serif'] = ['Times New Roman']
             plt.tight_layout()
             plt.savefig(of + "compare.pdf", format='pdf', bbox_inches='tight')
@@ -556,11 +632,7 @@ if __name__ == "__main__":
     main()
     on_manifold = False
     main()
-    # monotonic_act = "softplus_offset"
-    # main()
-    monotonic_act = "lrelu_offset"
+    monotonic_act = "square_offset"
     main()
-    monotonic_act = "sigmoid_offset"
+    monotonic_act = "root_offset"
     main()
-    # monotonic_act = "exp_0"
-    # main()
