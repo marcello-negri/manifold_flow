@@ -6,6 +6,7 @@ import numpy as np
 import scipy as sp
 import seaborn as sns
 import matplotlib.pyplot as plt
+import pandas as pd
 
 from collections import Counter
 from sklearn.decomposition import PCA
@@ -433,36 +434,38 @@ from sklearn.linear_model import LinearRegression, Lasso, Ridge, LogisticRegress
 def plot_lines_gt (x_gt, y_gt, dim, n_plots, x_model=None, y_mean_model=None, y_l_model=None, y_r_model=None, log_scale=True, norm=1, name_file=None, coarse=1, true_coeff=None, x_label='norm'):
     n_lines = dim // n_plots
     clrs = sns.color_palette("husl", n_lines)
+    sns.set_style("whitegrid")
+    sns.set_context('talk')
     for i in range(n_plots):
-        fig, ax = plt.subplots(figsize=(14, 14))
-        with sns.axes_style("darkgrid"):
-            for j in range(i * n_lines, (i + 1) * n_lines):
-                if j == dim:
-                    break
-                color = clrs[j % n_lines]
-                if any([i is not None for i in [x_model, y_mean_model, y_l_model, y_r_model]]):
-                    ax.plot(x_model, y_mean_model[:, j], c=color, alpha=0.7, linewidth=1.5)
-                    ax.fill_between(x_model, y_l_model[:, j], y_r_model[:, j], alpha=0.2, facecolor=color)
-                ax.plot(x_gt[::coarse], y_gt[:, j], linestyle='--', linewidth=1.5, c=color, alpha=0.7)
-                if true_coeff is not None:
-                    if true_coeff[j]!=0:
-                        ax.axhline(y=true_coeff[j], xmin=x_gt[::coarse].min(), xmax=x_gt[::coarse].max(), c=color, alpha=0.7, linewidth=1.5, linestyle=':')
+        fig, ax = plt.subplots(figsize=(12, 10))
+
+        for j in range(i * n_lines, (i + 1) * n_lines):
+            if j == dim:
+                break
+            color = clrs[j % n_lines]
+            if any([i is not None for i in [x_model, y_mean_model, y_l_model, y_r_model]]):
+                ax.plot(x_model, y_mean_model[:, j], c=color, alpha=0.9, linewidth=2.5)
+                ax.fill_between(x_model, y_l_model[:, j], y_r_model[:, j], alpha=0.2, facecolor=color)
+            ax.plot(x_gt[::coarse], y_gt[:, j], linestyle='--', linewidth=2.5, c=color, alpha=0.7)
+            if true_coeff is not None:
+                if true_coeff[j]!=0:
+                    ax.axhline(y=true_coeff[j], xmin=x_gt[::coarse].min(), xmax=x_gt[::coarse].max(), c=color, alpha=0.6, linewidth=2.5, linestyle=':')
         if x_label == "norm":
-            plt.xlabel(r"$||\beta||_{%s}$" % norm, fontsize=18)
+            plt.xlabel(r"$||\beta||_{%s}$" % norm, fontsize=26)
         elif x_label == "lambda":
-            plt.xlabel(r"$\lambda$", fontsize=18)
+            plt.xlabel(r"$\lambda$", fontsize=26)
         else:
             raise ValueError("x_label must be either 'norm' or 'lambda'")
-        plt.ylabel(r'$\beta$', fontsize=18)
+        plt.ylabel(r'$\beta$', fontsize=26)
         plt.locator_params(axis='y', nbins=4)
-        plt.xticks(fontsize=12)
-        plt.yticks(fontsize=12)
+        plt.xticks(fontsize=22)
+        plt.yticks(fontsize=22)
         if log_scale: plt.xscale('log')
         if name_file is not None:
             plt.savefig(f"{name_file}_{j}.pdf", bbox_inches='tight')
         plt.show()
 
-def plot_betas_lambda(samples, lambdas, X_np, y_np, sigma, gt_only=False, min_bin=None, max_bin=None, n_bins=51, norm=1, conf=0.95, n_plots=1, gt='linear_regression', folder_name='./', true_coeff=None):
+def plot_betas_lambda(samples, lambdas, X_np, y_np, sigma, gt_only=False, min_bin=None, max_bin=None, n_bins=51, norm=1, conf=0.95, n_plots=1, gt='linear_regression', folder_name='./', true_coeff=None, name=None):
 
     # compute ground truth solution path. Either linear regression or logistic regression
     if gt == 'linear_regression':
@@ -505,7 +508,7 @@ def plot_betas_lambda(samples, lambdas, X_np, y_np, sigma, gt_only=False, min_bi
     l_quant = np.quantile(samples, 1 - conf, axis=1)
     r_quant = np.quantile(samples, conf, axis=1)
     plot_lines_gt(x_model=lambdas, y_mean_model=sample_mean, y_l_model=l_quant, y_r_model=r_quant, x_gt=alphas,
-                  y_gt=beta_path, dim=X_np.shape[-1], n_plots=n_plots, norm=norm, name_file=None, true_coeff=true_coeff, x_label="lambda")
+                  y_gt=beta_path, dim=X_np.shape[-1], n_plots=n_plots, norm=norm, name_file=name, true_coeff=true_coeff, x_label="lambda")
 
     # 2) compute solution path for flow samples as a function of norm
     # first compute norm of each sample and then group samples by norm
@@ -513,7 +516,7 @@ def plot_betas_lambda(samples, lambdas, X_np, y_np, sigma, gt_only=False, min_bi
     try:
         bins_midpoint, bin_means, bin_l, bin_r, samples_norm = refine_samples_by_norm(all_samples, norm, min_bin, max_bin, n_bins, conf=conf)
         plot_lines_gt(x_model=bins_midpoint, y_mean_model=bin_means, y_l_model=bin_l, y_r_model=bin_r, x_gt=sklearn_norm,
-                  y_gt=sklearn_sorted, dim=X_np.shape[-1], n_plots=n_plots, log_scale=False, norm=norm, name_file=None, true_coeff=true_coeff)
+                  y_gt=sklearn_sorted, dim=X_np.shape[-1], n_plots=n_plots, log_scale=False, norm=norm, name_file=name+"_n" if name is not None else None, true_coeff=true_coeff)
     except:
         samples_norm, bin_l, bin_means, bin_r = None, None, None, None
         pass
@@ -524,7 +527,7 @@ def plot_betas_lambda(samples, lambdas, X_np, y_np, sigma, gt_only=False, min_bi
     mean_norms, samples_mean, samples_l, samples_r = refine_samples_by_mean_norm(samples, norm, conf)
 
     plot_lines_gt(x_model=mean_norms, y_mean_model=samples_mean, y_l_model=samples_l, y_r_model=samples_r, x_gt=sklearn_norm,
-                  y_gt=sklearn_sorted, dim=X_np.shape[-1], n_plots=n_plots, log_scale=False, norm=norm, name_file=None, true_coeff=true_coeff)
+                  y_gt=sklearn_sorted, dim=X_np.shape[-1], n_plots=n_plots, log_scale=False, norm=norm, name_file=name+"_nn" if name is not None else None, true_coeff=true_coeff)
 
 
 
@@ -959,10 +962,10 @@ def plot_clusters(samples, cond, cond_indices, n_clusters):
         plt.show()
 
 
-def plot_samples_3d(samples):
+def plot_samples_3d(samples, s=1, alpha=0.01):
     fig = plt.figure(figsize=(12, 12))
     ax = fig.add_subplot(projection='3d')
-    ax.scatter(samples[:,0], samples[:,1], samples[:,2], s=1, alpha=0.01)
+    ax.scatter(samples[:,0], samples[:,1], samples[:,2], s=s, alpha=alpha)
     plt.show()
 
 def plot_angles_3d(samples, args):
@@ -973,3 +976,35 @@ def plot_angles_3d(samples, args):
     axs[1].hist(samples_cat[:, 1].detach().cpu().numpy(),bins=50)
     axs[2].hist(samples_cat[:, 2].detach().cpu().numpy(),bins=50)
     plt.show()
+
+def plot_simplex(samples, dim_3, args, shift3to2=False, alpha=0.05, s=2):
+    d = samples.shape[-1]
+    assert samples.shape[-1] > (3 if dim_3 else 2)
+    samples = samples.reshape(-1,d)
+    proj = np.ones((d,d))
+    proj_svd = np.linalg.svd(proj)
+    simp_space = proj_svd.U[:,1:4] if dim_3 else proj_svd.U[:,1:3]
+    res = (simp_space.T)[None,] @ samples[...,None]
+    res = res[..., 0]
+
+    fig = plt.figure(figsize=(14, 14))
+    ax = fig.add_subplot(projection='3d' if dim_3 and not shift3to2 else None)
+
+    if dim_3:
+        if shift3to2:
+            resh = ((proj_svd.U[:,0:1].T)[None,] @ samples[...,None])[...,0]  # this results not in the norm in general, only for the l1 norm of the standard simplex
+            ax.scatter(res[:, 0], resh[:, 0], alpha=alpha, s=s)
+        else:
+            ax.scatter(res[:,0], res[:,1], res[:,2], alpha=alpha, s=s)
+    else:
+        ax.scatter(res[:,0], res[:,1], alpha=alpha, s=s)
+
+    plt.show()
+
+def to_file(arr, filename):
+    if isinstance(arr, np.ndarray):
+        df = pd.DataFrame(arr)
+    else:
+        df = pd.DataFrame(arr.detach().cpu().numpy())
+
+    df.to_csv(filename)

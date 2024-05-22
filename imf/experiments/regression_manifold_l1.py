@@ -193,7 +193,7 @@ def main():
     # torch.autograd.set_detect_anomaly(True)
     # train model
     flow.train()
-    flow, loss, loss_T = train_regression_cond(flow, log_unnorm_posterior, args=args, manifold=False)
+    flow, loss, loss_T = train_regression_cond(flow, log_unnorm_posterior, args=args, manifold=False, tn=args.Tn)
     plot_loss(loss)
 
     # evaluate model
