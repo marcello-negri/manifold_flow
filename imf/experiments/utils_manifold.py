@@ -264,7 +264,8 @@ def train_regression_cond(model, log_unnorm_posterior, args, manifold, **kwargs)
 
             if isinstance(log_posterior, tuple):
                 _, log_prior, log_like = log_posterior
-                k = 4.0  # >1 reduces the impact on the prior. <1 increases impact on prior. <0 for no impact
+                # k = 4.0  # >1 reduces the impact on the prior. <1 increases impact on prior. <0 for no impact
+                k =0.1  # >1 reduces the impact on the prior. <1 increases impact on prior. <0 for no impact
                 if T > 1:
                     Tp = (T+k-1)/k
                 else:
@@ -305,7 +306,7 @@ def train_regression_cond(model, log_unnorm_posterior, args, manifold, **kwargs)
 #
 #     return samples, log_probs
 
-def generate_samples (model, args, n_lambdas=0, cond=False, log_unnorm_posterior=None, manifold=True, context_size=10, sample_size=100, n_iter=1000):
+def generate_samples(model, args, n_lambdas=0, cond=False, log_unnorm_posterior=None, manifold=True, context_size=10, sample_size=100, n_iter=1000):
     it = 0
     samples_list, log_probs_list, kl_list, cond_list = [], [], [], []
     for _ in tqdm.tqdm(range(n_iter)):

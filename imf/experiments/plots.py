@@ -1,11 +1,13 @@
 import torch
 import meshio
 import tqdm
+import os
 import numpy as np
 import scipy as sp
 import seaborn as sns
 import matplotlib.pyplot as plt
 
+from collections import Counter
 from sklearn.decomposition import PCA
 from scipy.stats import gaussian_kde
 from functools import partial
@@ -560,7 +562,7 @@ def plot_betas_lambda_fixed_norm(samples, lambdas, dim, conf=0.95, n_plots=1, tr
             # plt.savefig(f"{name_file}_{j}.pdf", bbox_inches='tight')
             plt.show()
 
-def plot_cumulative_returns(samples, lambdas, X_np, y_np, conf=0.95, n_plots=1):
+def plot_cumulative_returns(samples, lambdas, X_np, y_np, prior_name, conf=0.95, n_samples=5, n_plots=1):
 
     returns = samples @ X_np.T
     returns = np.cumprod(returns, axis=2)
@@ -568,22 +570,154 @@ def plot_cumulative_returns(samples, lambdas, X_np, y_np, conf=0.95, n_plots=1):
     l_return = np.quantile(returns, 1 - conf, axis=1).T
     r_return = np.quantile(returns, conf, axis=1).T
 
+    dist_to_gt = np.square(returns - np.cumprod(y_np).ravel()).mean(-1)
+    sorted_dist = np.argsort(dist_to_gt)
+
     n_lines = lambdas.shape[0]
     clrs = sns.color_palette("husl", n_lines)
-    with sns.axes_style("darkgrid"):
+    with sns.axes_style("whitegrid"):
         for j in range(n_lines):
             fig, ax = plt.subplots(figsize=(14, 14))
             color = clrs[j % n_lines]
-            ax.plot(range(X_np.shape[0]), mean_return[:, j], c=color, alpha=0.7, linewidth=1.5)
-            ax.fill_between(range(X_np.shape[0]), l_return[:, j], r_return[:, j], alpha=0.2, facecolor=color)
-            ax.plot(range(X_np.shape[0]), np.cumprod(y_np).ravel(), c='r', linestyle='dashed')
-            plt.xlabel(r"time", fontsize=18)
-            plt.ylabel(r'stock value', fontsize=18)
-            plt.xticks(fontsize=12)
-            plt.yticks(fontsize=12)
-            plt.title(f'Cumulative return for alpha={lambdas[j]:.2f}')
-            # plt.savefig(f"{name_file}_{j}.pdf", bbox_inches='tight')
+            ax.plot(range(X_np.shape[0]), returns[j][sorted_dist[j]][:n_samples].T, alpha=0.5, linewidth=3, label='5 closest samples')
+            ax.plot(range(X_np.shape[0]), mean_return[:, j], c=color, linestyle='dashed', alpha=1, linewidth=4, label='average')
+            ax.fill_between(range(X_np.shape[0]), l_return[:, j], r_return[:, j], alpha=0.2, facecolor=color, label='95% C.I.')
+            ax.plot(range(X_np.shape[0]), np.cumprod(y_np).ravel(), c='k', linestyle='dotted', linewidth=4, label='ref. index')
+            plt.locator_params(axis='y', nbins=4)
+            plt.locator_params(axis='x', nbins=5)
+            plt.xlabel(r"time", fontsize=36)
+            plt.ylabel(r'cumulative return', fontsize=36)
+            plt.ylim((0,13))
+            plt.xticks(fontsize=24)
+            plt.yticks(fontsize=24)
+            # plt.title(f'Cumulative return for alpha={lambdas[j]:.2f}')
+            plt.legend(loc=2, prop={'size': 28})
+            plt.savefig(f"{os.getcwd()}/imf/experiments/plots/path_{prior_name}_{lambdas[j]:.2f}.pdf", bbox_inches='tight')
             plt.show()
+
+    sorted_samples = np.array([samples[i][sorted_dist[i]] for i in range(samples.shape[0])])
+    plot_sparsity_patterns(samples=sorted_samples[:,:30], prior_name=prior_name, sort=False)
+
+def plot_cumulative_returns_singularly(samples, X_np, y_np, prior_name, conf=0.95, n_plots=1):
+
+    returns = samples @ X_np.T
+    returns = np.cumprod(returns, axis=-1)
+
+    with sns.axes_style("darkgrid"):
+        fig, ax = plt.subplots(figsize=(14, 14))
+        ax.plot(range(X_np.shape[0]), returns.T, alpha=0.7, linewidth=1.5)
+        ax.plot(range(X_np.shape[0]), np.cumprod(y_np).ravel(), c='r', linestyle='dashed')
+        plt.xlabel(r"time", fontsize=18)
+        plt.ylabel(r'stock value', fontsize=18)
+        plt.xticks(fontsize=12)
+        plt.yticks(fontsize=12)
+        plt.savefig(f"{os.getcwd()}/imf/experiments/plots/path_{prior_name}_lines.pdf", bbox_inches='tight')
+        plt.show()
+
+
+def plot_sparsity_patterns(samples, prior_name, sort=True, threshold=None):
+    def sort_matrix_by_non_zero(matrix, threshold):
+        non_zero_counts = np.sum(matrix > threshold, axis=-1)
+        sorted_indices = np.argsort(non_zero_counts)
+        sorted_matrix = matrix[sorted_indices]
+        return sorted_matrix
+
+    if threshold is None:
+        threshold = 1. / samples.shape[-1] # anything more than uniform
+
+    num_matrices = samples.shape[0]
+    fig, axes = plt.subplots(num_matrices, 1,)# figsize=(10, 5 * num_matrices))
+
+    # Plot each sorted matrix
+    for i, matrix in enumerate(samples):
+        if sort:
+            sorted_matrix = sort_matrix_by_non_zero(matrix, threshold)
+        else:
+            sorted_matrix = matrix
+        ax = axes[i]
+        im = ax.imshow(sorted_matrix.T, vmin=0, vmax=1, cmap="Blues")
+        # ax.set_title(f'Matrix {i + 1} (Sorted by Non-zero Entries)')
+        # ax.set_xlabel('Columns')
+        # ax.set_ylabel('Rows')
+        # if i != samples.shape[0] - 1:
+        ax.set_xticks([])
+
+    # Add a colorbar to the last subplot
+    fig.colorbar(im, ax=axes, orientation='vertical', fraction=0.15, pad=0.05)
+
+    # plt.tight_layout()
+    plt.savefig(f"{os.getcwd()}/imf/experiments/plots/sparsity_{prior_name}.pdf", bbox_inches='tight')
+    plt.show()
+
+
+
+def plot_sparsity_distr(samples1, samples2, X_np, y_np, norm=True, threshold=None, n_bins=25):
+
+    def keys_values(samples, threshold, norm=True):
+        non_zero_counts = np.sum(samples > threshold, axis=-1)
+        counts_dict = Counter(non_zero_counts)
+        keys = np.array(list(counts_dict.keys()))
+        values = np.array(list(counts_dict.values()))
+        sort_idx = np.argsort(keys)
+        values_ = values / values.sum()
+        return keys[sort_idx], values_[sort_idx]
+
+    if threshold is None:
+        threshold = 1. / samples1.shape[-1] # anything more than uniform
+
+    mse1 = np.sqrt(np.square(samples1 @ X_np.T - y_np).mean(-1))
+    flatten_mse1 = mse1.flatten()
+
+    mse2 = np.sqrt(np.square(samples2 @ X_np.T - y_np).mean(-1))
+    flatten_mse2 = mse2.flatten()
+
+    min_bin = max(mse1.min(), mse2.min())
+    max_bin = min(mse1.max(), mse2.max())
+
+    bin_edges = np.linspace(min_bin, max_bin, num=n_bins)
+    idx1 = np.digitize(flatten_mse1, bin_edges)
+    idx2 = np.digitize(flatten_mse2, bin_edges)
+
+    n_dim = n_bins//3 - 1
+    n_rows = int(np.sqrt(n_dim))
+    if n_rows ** 2 != n_dim: n_rows += 1
+    n_cols = n_rows
+
+    # reshaped_samples = samples1.reshape(-1, samples1.shape[-1])
+    # non_zero_counts = np.sum(reshaped_samples > 0.01, axis=-1)
+    # H, xedges, yedges = np.histogram2d(non_zero_counts, 10*(flatten_mse1-flatten_mse1.min())/(flatten_mse1.max() - flatten_mse1.min()))
+    # plt.imshow(H, interpolation='nearest', origin='lower', extent=[xedges[0], xedges[-1], yedges[0], yedges[-1]])
+
+    with sns.axes_style("whitegrid"):
+
+        fig, axs = plt.subplots(figsize=(14, 14), nrows=n_rows, ncols=n_cols)
+        fig1, axs1 = plt.subplots(figsize=(14, 14), nrows=n_rows, ncols=n_cols)
+        fig2, axs2 = plt.subplots(figsize=(14, 14), nrows=n_rows, ncols=n_cols)
+
+        flatten_samples1 = samples1.reshape(-1, samples1.shape[-1])
+        flatten_samples2 = samples2.reshape(-1, samples2.shape[-1])
+
+        for i_r in np.arange(n_rows):
+            for i_c in np.arange(n_rows):
+                try:
+                    samples_range1 = flatten_samples1[idx1 == n_rows * i_r + i_c + 1]
+                    keys1, values1 = keys_values(samples_range1, norm=norm, threshold=threshold)
+                    samples_range2 = flatten_samples2[idx2 == n_rows * i_r + i_c + 1]
+                    keys2, values2 = keys_values(samples_range2, norm=norm, threshold=threshold)
+                    axs[i_r, i_c].bar(x=keys1, height=values1, alpha=0.5, label='Uniform')
+                    axs[i_r, i_c].bar(x=keys2, height=values2, alpha=0.5, label='Dirichlet')
+                    if i_r + i_c == 0: axs[i_r, i_c].legend()
+
+                    axs1[i_r, i_c].imshow(samples_range1[:50].T, cmap="Blues")
+                    axs2[i_r, i_c].imshow(samples_range2[:50].T, cmap="Oranges")
+                except:
+                    pass
+
+        fig.savefig("non_zero_distr.pdf", bbox_inches='tight')
+        fig1.figure.savefig("non_zero_uniform.pdf", bbox_inches='tight')
+        fig2.figure.savefig("non_zero_dirichlet.pdf", bbox_inches='tight')
+        plt.show()
+
 
 def plot_returns(samples, lambdas, X_np, y_np, conf=0.95, n_plots=1):
 

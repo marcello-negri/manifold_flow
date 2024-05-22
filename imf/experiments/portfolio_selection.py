@@ -11,7 +11,7 @@ from functools import partial
 from imf.experiments.utils_manifold import train_regression_cond, generate_samples
 from imf.experiments.datasets import load_diabetes_dataset, generate_regression_dataset, generate_regression_dataset_positive_coeff
 from imf.experiments.architecture import build_cond_flow_reverse, build_cond_flow_l1_manifold, build_simple_cond_flow_l1_manifold, build_circular_cond_flow_l1_manifold
-from imf.experiments.plots import plot_betas_lambda_fixed_norm, plot_loss, plot_betas_lambda, plot_marginal_likelihood, plot_returns, plot_cumulative_returns
+from imf.experiments.plots import plot_betas_lambda_fixed_norm, plot_loss, plot_sparsity_distr, plot_cumulative_returns_singularly, plot_sparsity_patterns, plot_betas_lambda, plot_marginal_likelihood, plot_returns, plot_cumulative_returns
 
 import logging
 logger = logging.getLogger(__name__)
@@ -51,14 +51,6 @@ def set_random_seeds (seed=1234):
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-def create_directories():
-    dir_name = "plots/"
-    if not os.path.exists(dir_name):
-        os.makedirs(dir_name)
-    model_dir = "models"
-    if not os.path.exists(model_dir):
-        os.makedirs(model_dir)
-
 def gaussian_log_likelihood(beta: torch.Tensor, sigma: torch.Tensor, X: torch.Tensor, y: torch.Tensor, ):
     # implements Gaussian log-likelihood beta ~ Normal (X@beta, sigma^2 ID)
     eps = 1e-7
@@ -71,13 +63,13 @@ def lp_norm_prior(beta: torch.Tensor, cond: torch.Tensor, args):
     if args.log_cond: lamb_ = 10 ** cond
     else: lamb_ = cond
 
-    p = 0.5
+    p = 0.1
 
     log_const = torch.log(lamb_) / p + np.log(0.5 * p) - sp.special.loggamma(1./p)
     log_prior = - lamb_ * (torch.linalg.vector_norm(beta, ord=p, dim=-1)**p)
     log_prior_lp = log_prior + beta.shape[-1] * log_const
 
-    return log_prior_lp
+    return log_prior + log_prior_lp
 
 def dirichlet_prior(beta: torch.Tensor, alpha: torch.Tensor, args):
     if args.log_cond: alpha_ = 10 ** alpha
@@ -91,23 +83,19 @@ def dirichlet_prior(beta: torch.Tensor, alpha: torch.Tensor, args):
 
     return log_const + log_prior
 
-def dirichlet_prior_beta(beta: torch.Tensor):
 
-    dim = beta.shape[-1]
-    alpha = torch.ones((1, dim), device= beta.device) * 10
-    # alpha [:,:5] = 0.0001
-
-    log_const = torch.lgamma(alpha).sum(-1) - torch.lgamma(alpha.sum(-1))
-    # log_const = torch.lgamma(alpha_ * K) - K * torch.lgamma(alpha_)
-    log_prior = ((alpha - 1) * torch.log(beta)).sum(-1)
-
-    return log_const + log_prior
-
-def unnorm_log_posterior(beta: torch.Tensor, cond: torch.Tensor, sigma:torch.Tensor, X: torch.Tensor, y: torch.Tensor, args, flow_prior=None):
+def unnorm_log_posterior(beta: torch.Tensor, prior_name: str, cond: torch.Tensor, sigma:torch.Tensor, X: torch.Tensor, y: torch.Tensor, args, flow_prior=None):
     log_lik = gaussian_log_likelihood(beta=beta, sigma=sigma, X=X, y=y)
-    # log_prior = laplace_prior(beta=beta, lamb=cond, args=args)
-    # log_prior = lp_norm_prior(beta=beta, cond=cond, args=args)
-    log_prior = dirichlet_prior(beta=beta, alpha=cond, args=args)
+    # log_lik = gaussian_log_likelihood_mean(beta=beta, sigma=sigma, X=X, mu=y)
+    # log_prior = laplace_prior(beta=beta, lamb=cond, argss=args)
+    if prior_name == "lp_norm":
+        log_prior = lp_norm_prior(beta=beta, cond=cond, args=args)
+    elif prior_name == "dirichlet":
+        log_prior = dirichlet_prior(beta=beta, alpha=cond, args=args)
+    elif prior_name == "uniform":
+        log_prior = dirichlet_prior(beta=beta, alpha=torch.zeros_like(cond), args=args)
+    else:
+        raise ValueError(f"Prior {prior_name} not recognized")
     # log_prior = dirichlet_prior_beta(beta=beta)
     # log_prior = lp_norm_prior_on_manifold(beta=beta, lamb=cond, flow=flow_prior, args=args)
     # breakpoint()
@@ -124,7 +112,6 @@ def t_student_log_likelihood(beta: torch.Tensor, a0: torch.Tensor, b0: torch.Ten
 def compute_norm_generalized_gaussian(args):
     args.log_cond = True
     set_random_seeds(args.seed)
-    create_directories()
     flow = build_simple_cond_flow_l1_manifold(args, n_layers=3, n_hidden_features=64, n_context_features=64, clamp_theta=False)
     model_name = f"/home/negri0001/Documents/Marcello/cond_flows/manifold_flow/imf/experiments/models/generalized_gaussian_dim{args.datadim}_p{args.beta}_lmin{args.cond_min}_lmax{args.cond_max}"
     lp_norm_prior_ = partial(lp_norm_prior, args=args)
@@ -146,15 +133,24 @@ def lp_norm_prior_on_manifold(beta: torch.Tensor, lamb: torch.Tensor, flow, args
         log_prob = flow.log_prob(beta.reshape(-1, dim), context=lamb_)
     return log_prob
 
-def load_returns_dataset(stock_to_replicate=0, timesteps=-1):
+def load_returns_dataset(stock_to_replicate=0, timesteps=-1, n_stocks_portfolio=-1):
     # the dataset contains returns of 99 stocks expressed in relative terms r_i = (p_i - p_i-1)/p_i-1
-    df = pd.read_csv("/home/negri0001/Documents/Marcello/cond_flows/manifold_flow/imf/experiments/ret_rf.csv")
+    df = pd.read_csv("./ret_rf.csv")
     df = df.dropna(axis=1) # timesteps x stocks
     dates = df.iloc[:,0].values
-    df_np = df.iloc[:,1:].values.T # stocks x timesteps
+    df_np = df.iloc[:,1:n_stocks_portfolio].values.T # stocks x timesteps
     df_np = df_np + 1 # convert relative returns to price ratios i.e. r'_i = p_i/p_i-1
+    df_np = np.c_[np.ones((df_np.shape[0], 1)), df_np]
 
     cum_return = np.cumprod(df_np.T, axis=0)
+    fig, axs = plt.subplots(1, 2, figsize=(10, 5))
+    axs[0].plot(cum_return)
+    axs[1].plot(cum_return.mean(1), label="average stock return")
+    axs[1].plot(cum_return[:, stock_to_replicate], linestyle='--', color='r', label="stock to replicate")
+    plt.legend()
+    plt.show()
+
+    cum_return = np.cumprod(df_np.T[:timesteps], axis=0)
     fig, axs = plt.subplots(1, 2, figsize=(10, 5))
     axs[0].plot(cum_return)
     axs[1].plot(cum_return.mean(1), label="average stock return")
@@ -162,72 +158,57 @@ def load_returns_dataset(stock_to_replicate=0, timesteps=-1):
     plt.show()
 
     X_np = df_np[np.arange(df_np.shape[0])!=stock_to_replicate, :timesteps].T
-    # X_np = df_np[:, :timesteps].T
     y_np = df_np[stock_to_replicate, :timesteps].reshape(1,-1)
 
     return dates[:timesteps], X_np, y_np
 
-def load_returns_dataset_():
-    # the dataset contains returns of 99 stocks expressed in relative terms r_i = (p_i - p_i-1)/p_i-1
-    df = pd.read_csv("./ret_rf.csv")
-    df = df.dropna(axis=1) # timesteps x stocks
-    dates = df.iloc[:,0].values
-    df_np = df.iloc[:,1:].values
-    df_np = df_np + 1 # convert relative returns to price ratios i.e. r'_i = p_i/p_i-1
-
-    plt.plot(np.cumprod(df_np, axis=0))
-    plt.show()
-
-    return dates, df_np
-
 def main():
+    just_load = True # False: train model and save samples. True: load the samples
     args.log_cond = True
+    prior_name = "dirichlet" # independent of args.cond_min and args.cond_max
+    # prior_name = "uniform" # argscond_min=-2 args.cond_max = 0
 
     # set random seed for reproducibility
     set_random_seeds(args.seed)
-    create_directories()
 
     # load data
-    # X_tensor, y_tensor, X_np, y_np = load_diabetes_dataset(device=args.device)
-    dates, X_np, y_np = load_returns_dataset(stock_to_replicate=7, timesteps=-350)
-    # X_np, y_np, true_beta = generate_regression_dataset_positive_coeff(n_samples=100, n_features=10, n_non_zero=9, noise_std=0.5)
+    dates, X_np, y_np = load_returns_dataset(stock_to_replicate=7, timesteps=-353, n_stocks_portfolio=-87)
     X_tensor = torch.from_numpy(X_np).float().to(device=args.device)
     y_tensor = torch.from_numpy(y_np).float().to(device=args.device)
     args.datadim = X_tensor.shape[1]
 
-    # flow_prior = compute_norm_generalized_gaussian(args)
-    # flow_prior.eval()
     sigma = torch.tensor(1, device=args.device)
-    log_unnorm_posterior = partial(unnorm_log_posterior, sigma=sigma, X=X_tensor, y=y_tensor, args=args)
-    # log_unnorm_posterior = partial(unnorm_log_posterior, sigma=sigma, X=X_tensor, y=y_tensor, flow_prior=flow_prior, args=args)
-    # a0 = torch.tensor(2., device=args.device)
-    # b0 = torch.tensor(2., device=args.device)
-    # log_unnorm_posterior = partial(t_student_log_likelihood, a0=a0, b0=b0, X=X_tensor, y=y_tensor)
+    log_unnorm_posterior = partial(unnorm_log_posterior, prior_name=prior_name, sigma=sigma, X=X_tensor, y=y_tensor, args=args)
 
-    # build model
+    if not just_load:
+        # build model
+        flow = build_circular_cond_flow_l1_manifold(args)
 
-    flow = build_circular_cond_flow_l1_manifold(args)
-    # flow = build_cond_flow_l1_manifold(args)
+        # train model
+        flow.train()
+        flow, loss, loss_T = train_regression_cond(flow, log_unnorm_posterior, args=args, manifold=False)
+        plot_loss(loss)
 
-    # torch.autograd.set_detect_anomaly(True)
-    # train model
-    flow.train()
-    flow, loss, loss_T = train_regression_cond(flow, log_unnorm_posterior, args=args, manifold=False)
-    plot_loss(loss)
+        # evaluate model
+        flow.eval()
+        samples, cond, kl = generate_samples(flow, args, n_lambdas=20, cond=True, log_unnorm_posterior=log_unnorm_posterior, manifold=False, context_size=10, sample_size=100, n_iter=1)
+        plot_betas_lambda_fixed_norm(samples=samples, lambdas=cond, dim=X_np.shape[-1], conf=0.95, n_plots=1, log_scale=args.log_cond)
 
-    # evaluate model
-    flow.eval()
-    # samples, cond, kl = generate_samples(flow, args, cond=True, log_unnorm_posterior=log_unnorm_posterior, manifold=False, context_size=10, sample_size=100, n_iter=100)
-    samples, cond, kl = generate_samples(flow, args, n_lambdas=20, cond=True, log_unnorm_posterior=log_unnorm_posterior, manifold=False, context_size=10, sample_size=100, n_iter=1)
-    # plot_betas_norm(samples_sorted=samples, norm_sorted=cond, X_np=X_np, y_np=y_np, norm=args.beta)#, true_coeff=true_beta)
-    plot_betas_lambda_fixed_norm(samples=samples, lambdas=cond, dim=X_np.shape[-1], conf=0.95, n_plots=1, log_scale=args.log_cond)
+        # uncomment to plot cumulative returns
+        # samples, cond, kl = generate_samples(flow, args, n_lambdas=5, cond=True, log_unnorm_posterior=log_unnorm_posterior,
+        #                                      manifold=False, context_size=1, sample_size=100, n_iter=1)
+        # plot_returns(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, conf=0.95, n_plots=1)
+        # plot_cumulative_returns(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, conf=0.95, n_plots=1, prior_name=prior_name)
+        # plot_sparsity_patterns(samples=samples[:, :30], prior_name=prior_name)
 
-    samples, cond, kl = generate_samples(flow, args, n_lambdas=4, cond=True, log_unnorm_posterior=log_unnorm_posterior,
-                                         manifold=False, context_size=1, sample_size=100, n_iter=1)
-    # plot_returns(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, conf=0.95, n_plots=1)
-    plot_cumulative_returns(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, conf=0.95, n_plots=1)
+        samples, cond, kl = generate_samples(flow, args, n_lambdas=100, cond=True, log_unnorm_posterior=log_unnorm_posterior,
+                                             manifold=False, context_size=1, sample_size=500, n_iter=1)
+        np.save(f'data_{prior_name}.npy', samples)
+    else:
+        samples_uniform = np.load('data_uniform.npy')  # load
+        samples_dirichlet = np.load('data_dirichlet.npy')  # load
 
-    # plot_marginal_likelihood(kl, cond, args)
+        plot_sparsity_distr(samples_uniform, samples_dirichlet, X_np, y_np, threshold=0.01, n_bins=25)
 
 if __name__ == "__main__":
     main()
