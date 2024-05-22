@@ -291,7 +291,7 @@ def main():
     seed = 666
     set_random_seeds(seed)
 
-    if 1:
+    if visualize_all:
         path_print(0)
         group_print(1)
         exit(0)
@@ -635,6 +635,7 @@ def group_print(variant):
 
 monotonic_act = ""
 on_manifold = True
+visualize_all = False
 if __name__ == "__main__":
     monotonic_act = "laplace_exact"
     to_use_log_cond = False
@@ -645,4 +646,6 @@ if __name__ == "__main__":
     monotonic_act = "square_offset"
     main()
     monotonic_act = "root_offset"
+    main()
+    visualize_all = True
     main()
