@@ -432,36 +432,36 @@ from sklearn.linear_model import LinearRegression, Lasso, Ridge, LogisticRegress
 def plot_lines_gt (x_gt, y_gt, dim, n_plots, x_model=None, y_mean_model=None, y_l_model=None, y_r_model=None, log_scale=True, norm=1, name_file=None, coarse=1, true_coeff=None, x_label='norm'):
     n_lines = dim // n_plots
     clrs = sns.color_palette("husl", n_lines)
-    with sns.axes_style("whitegrid"):
-        sns.set_context('talk')
-        for i in range(n_plots):
-            fig, ax = plt.subplots(figsize=(14, 14))
+    sns.set_style("whitegrid")
+    sns.set_context('talk')
+    for i in range(n_plots):
+        fig, ax = plt.subplots(figsize=(12, 10))
 
-            for j in range(i * n_lines, (i + 1) * n_lines):
-                if j == dim:
-                    break
-                color = clrs[j % n_lines]
-                if any([i is not None for i in [x_model, y_mean_model, y_l_model, y_r_model]]):
-                    ax.plot(x_model, y_mean_model[:, j], c=color, alpha=0.7, linewidth=1.5)
-                    ax.fill_between(x_model, y_l_model[:, j], y_r_model[:, j], alpha=0.2, facecolor=color)
-                ax.plot(x_gt[::coarse], y_gt[:, j], linestyle='--', linewidth=1.5, c=color, alpha=0.7)
-                if true_coeff is not None:
-                    if true_coeff[j]!=0:
-                        ax.axhline(y=true_coeff[j], xmin=x_gt[::coarse].min(), xmax=x_gt[::coarse].max(), c=color, alpha=0.7, linewidth=1.5, linestyle=':')
-            if x_label == "norm":
-                plt.xlabel(r"$||\beta||_{%s}$" % norm, fontsize=18)
-            elif x_label == "lambda":
-                plt.xlabel(r"$\lambda$", fontsize=18)
-            else:
-                raise ValueError("x_label must be either 'norm' or 'lambda'")
-            plt.ylabel(r'$\beta$', fontsize=18)
-            plt.locator_params(axis='y', nbins=4)
-            # plt.xticks(fontsize=12)
-            # plt.yticks(fontsize=12)
-            if log_scale: plt.xscale('log')
-            if name_file is not None:
-                plt.savefig(f"{name_file}_{j}.pdf", bbox_inches='tight')
-            plt.show()
+        for j in range(i * n_lines, (i + 1) * n_lines):
+            if j == dim:
+                break
+            color = clrs[j % n_lines]
+            if any([i is not None for i in [x_model, y_mean_model, y_l_model, y_r_model]]):
+                ax.plot(x_model, y_mean_model[:, j], c=color, alpha=0.9, linewidth=2.5)
+                ax.fill_between(x_model, y_l_model[:, j], y_r_model[:, j], alpha=0.2, facecolor=color)
+            ax.plot(x_gt[::coarse], y_gt[:, j], linestyle='--', linewidth=2.5, c=color, alpha=0.7)
+            if true_coeff is not None:
+                if true_coeff[j]!=0:
+                    ax.axhline(y=true_coeff[j], xmin=x_gt[::coarse].min(), xmax=x_gt[::coarse].max(), c=color, alpha=0.6, linewidth=2.5, linestyle=':')
+        if x_label == "norm":
+            plt.xlabel(r"$||\beta||_{%s}$" % norm, fontsize=26)
+        elif x_label == "lambda":
+            plt.xlabel(r"$\lambda$", fontsize=26)
+        else:
+            raise ValueError("x_label must be either 'norm' or 'lambda'")
+        plt.ylabel(r'$\beta$', fontsize=26)
+        plt.locator_params(axis='y', nbins=4)
+        plt.xticks(fontsize=22)
+        plt.yticks(fontsize=22)
+        if log_scale: plt.xscale('log')
+        if name_file is not None:
+            plt.savefig(f"{name_file}_{j}.pdf", bbox_inches='tight')
+        plt.show()
 
 def plot_betas_lambda(samples, lambdas, X_np, y_np, sigma, gt_only=False, min_bin=None, max_bin=None, n_bins=51, norm=1, conf=0.95, n_plots=1, gt='linear_regression', folder_name='./', true_coeff=None, name=None):
 

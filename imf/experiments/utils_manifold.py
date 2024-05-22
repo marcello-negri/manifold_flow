@@ -308,6 +308,8 @@ def train_regression_cond(model, log_unnorm_posterior, args, manifold, tn, **kwa
 def generate_samples (model, args, n_lambdas=0, cond=False, log_unnorm_posterior=None, manifold=True, context_size=10, sample_size=100, n_iter=1000):
     it = 0
     samples_list, log_probs_list, kl_list, cond_list = [], [], [], []
+    if n_lambdas != 0:
+        full_lambdas = torch.linspace(args.cond_min, args.cond_max, n_lambdas, device=args.device).view(n_iter, -1, 1)
     for _ in tqdm.tqdm(range(n_iter)):
         # it = it + 1
         if cond and log_unnorm_posterior is not None:
@@ -315,7 +317,7 @@ def generate_samples (model, args, n_lambdas=0, cond=False, log_unnorm_posterior
                 rand_cond = torch.rand(context_size, device=args.device)
                 uniform_cond = (rand_cond * (args.cond_max - args.cond_min) + args.cond_min).view(-1, 1)
             else:
-                uniform_cond = torch.linspace(args.cond_min, args.cond_max, n_lambdas, device=args.device).view(-1,1)
+                uniform_cond = full_lambdas[it]
             # if (args.cond_max < 1 and args.cond_min < 1):
             #     factor = it / n_iter
             #     uniform_cond = factor * uniform_cond + (1-factor)*1.0
@@ -335,6 +337,7 @@ def generate_samples (model, args, n_lambdas=0, cond=False, log_unnorm_posterior
 
         samples_list.append(posterior_samples.detach().cpu().numpy())
         log_probs_list.append(log_probs_samples.detach().cpu().numpy())
+        it = it + 1
 
     samples_list = np.concatenate(samples_list, 0)
     log_probs_list = np.concatenate(log_probs_list, 0)

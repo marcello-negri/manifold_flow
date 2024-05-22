@@ -48,6 +48,26 @@ parser.add_argument("--kl_div", type=str, default="forward", choices=["forward",
 
 args = parser.parse_args()
 
+
+def gaussian_kernel(window_size, sigma):
+    gauss = torch.tensor([np.exp(-(x - window_size//2)**2 / float(2 * sigma**2)) for x in range(window_size)])
+    return gauss / gauss.sum()
+
+def moving_average(tensor, window_size=5, sigma=1.0):
+    ndarr = isinstance(tensor, np.ndarray)
+    tensor = torch.tensor(tensor) if ndarr else tensor
+    # Create a 1D convolutional kernel for moving average and reshape tensors
+    kernel = gaussian_kernel(window_size, sigma)
+    kernel = kernel.view(1, 1, -1)
+    kernel = kernel.expand((5,5,-1))
+    tensor = tensor.permute(1, 2, 0)
+    #tensor = tensor.unsqueeze(0)
+
+    smoothed_tensor = torch.nn.functional.conv1d(tensor, kernel, padding=window_size // 2)
+
+    smoothed_tensor = smoothed_tensor.squeeze(0).permute(2, 0, 1)[:tensor.size(-1)]  # Shape back to (n, b, d)
+    return smoothed_tensor if not ndarr else smoothed_tensor.numpy()
+
 def set_random_seeds (seed=1234):
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -276,17 +296,22 @@ def main():
         group_print(1)
         exit(0)
 
-    args.log_cond = True
+    args.log_cond = to_use_log_cond
     match monotonic_act:
         case "square_offset":
             args.cond_min = -3.5
             args.cond_max = 0.2
         case "root_offset":
-            args.cond_min = -2.
+            args.cond_min = -2.5
             args.cond_max = 2.7
         case "laplace_exact":
-            args.cond_min = -2.5
-            args.cond_max = 1.0
+            if on_manifold:
+                args.cond_min = 0.1#-1.
+                args.cond_max = 32.0#np.log10(30)
+            else:
+                args.cond_min = -2.5
+                args.cond_max = 1.2
+    Tn = 0.01
     ratio_nonzero = 1
     args.datadim = 5
     n_samples = 7
@@ -360,18 +385,21 @@ def main():
         flow.train()
         iter_norm = args.epochs
         args.epochs = map_its
-        flow, loss, loss_T = train_regression_cond(model=flow, log_unnorm_posterior=target_distr, args=args, tn=0.01, manifold=False)
+        flow, loss, loss_T = train_regression_cond(model=flow, log_unnorm_posterior=target_distr, args=args, tn=Tn, manifold=False)
         args.epochs = iter_norm
         flow.eval()
     #    plot_loss(loss)
-        samples, cond, kl = generate_samples(flow, args, cond=True, log_unnorm_posterior=target_distr,
+        samples, cond, kl = generate_samples(flow, args, n_lambdas=2000, cond=True, log_unnorm_posterior=target_distr,
                                              manifold=False, context_size=2000, sample_size=5, n_iter=1)
         plot_betas_lambda(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, sigma=sigma_regr, gt_only=False,
                           min_bin=None, max_bin=None, n_bins=51, norm=1, conf=0.95, n_plots=1, gt='linear_regression', true_coeff=None)
-        beta_norms = np.linalg.norm(samples, axis=-1, ord=1).mean(-1)
-        beta_norms_mask = beta_norms > chosen_norm
-        bindex = beta_norms_mask.astype(int).sum(-1)
-        our_cond = cond[bindex-1]
+        if on_manifold:
+            our_cond = chosen_norm
+        else:
+            beta_norms = np.linalg.norm(samples, axis=-1, ord=1).mean(-1)
+            beta_norms_mask = beta_norms > chosen_norm
+            bindex = beta_norms_mask.astype(int).sum(-1)
+            our_cond = cond[bindex-1]
         print("our_cond", our_cond)
         to_file(samples.reshape(-1, args.datadim), "mapall_" + out_name)
         to_file(cond, "mapcall_" + out_name)
@@ -391,8 +419,8 @@ def main():
     flow.eval()
 
     # evaluate model
-    samples, cond, kl = generate_samples(flow, args, cond=True, log_unnorm_posterior=target_distr,
-                                         manifold=False, context_size=10, sample_size=1000, n_iter=20)
+    samples, cond, kl = generate_samples(flow, args, n_lambdas=2000, cond=True, log_unnorm_posterior=target_distr,
+                                         manifold=False, context_size=20, sample_size=1000, n_iter=100)
     plot_betas_lambda(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, sigma=sigma_regr, gt_only=False,
                       min_bin=None, max_bin=None, n_bins=51, norm=1, conf=0.95, n_plots=1, gt='linear_regression', true_coeff=None)
     opt_cond = plot_marginal_likelihood(kl_sorted=kl, cond_sorted=cond, args=args)
@@ -404,10 +432,13 @@ def main():
     to_file(y_np, "ynp_" + out_name)
 
     if not use_map_norm_matching:
-        beta_norms = np.linalg.norm(samples, axis=-1, ord=1).mean(-1)
-        beta_norms_mask = beta_norms > chosen_norm
-        bindex = beta_norms_mask.astype(int).sum(-1)
-        our_cond = cond[bindex - 1]
+        if on_manifold:
+            our_cond = chosen_norm
+        else:
+            beta_norms = np.linalg.norm(samples, axis=-1, ord=1).mean(-1)
+            beta_norms_mask = beta_norms > chosen_norm
+            bindex = beta_norms_mask.astype(int).sum(-1)
+            our_cond = cond[bindex - 1]
         print("our_cond", our_cond)
 
     posterior_samples, psslogprob = flow.sample_and_log_prob(1000, context=(np.log10(our_cond) if args.log_cond else our_cond)*torch.ones(1,1,device=args.device))
@@ -444,6 +475,8 @@ def path_print(variant):
     import os
     from mpl_toolkits.mplot3d.art3d import Poly3DCollection
     from mpl_toolkits.mplot3d import Axes3D
+    nlambdas = 2000
+    subsample_for_path = 20
     files = [f for f in os.listdir("./") if f.endswith(".csv") and (f.startswith("all_") or f.startswith("mapall_"))]
     names = [f[4:-4] if f.startswith("all_") else "m"+f[7:-4] for f in files]
 
@@ -457,7 +490,7 @@ def path_print(variant):
             on = on[1:]
         n = name_map[on]
         print(n if not map_data else "map " + n)
-        samples = di.to_numpy().reshape(200,-1,5) if not map_data else di.to_numpy().reshape(2000,-1,5)
+        samples = di.to_numpy().reshape(nlambdas,-1,5) if not map_data else di.to_numpy().reshape(nlambdas,-1,5)
         cond = pd.read_csv(("call_" if not map_data else "mapcall_") + on + ".csv").loc[:, '0':].to_numpy()[...,0]
         X_np = pd.read_csv("xnp_" + on + ".csv").loc[:, '0':].to_numpy()
         y_np = pd.read_csv("ynp_" + on + ".csv").loc[:, '0':].to_numpy()[...,0]
@@ -466,18 +499,21 @@ def path_print(variant):
         dm = di.melt(id_vars='s', var_name='coeff', value_name='value')
         if name_map["mani_laplace_exact"] in n:
             dms[n] = samples
-        elif not map_data:
+        if not map_data:
             normmeans = np.linalg.norm(samples, axis=-1, ord=1).mean(-1)
             pdt = pd.DataFrame(normmeans)
             dms[n] = pdt.melt(value_name="norm")
             dms[n]["source"] = n
-            mapsamples = name_d_dic["m" + on].to_numpy().reshape(2000, -1, 5)
+            mapsamples = pd.read_csv("mapall_" + on + ".csv").loc[:, '0':].to_numpy().reshape(nlambdas, -1, 5)
             mapnormmeans = np.linalg.norm(mapsamples, axis=-1, ord=1).mean(-1)
-            norms_mask = mapnormmeans > 5.0
+            norms_mask = mapnormmeans > 5.0 if not name_map["mani_laplace_exact"] in n else mapnormmeans < 5.0
             mapindex = norms_mask.astype(int).sum(-1)
             mapcond = pd.read_csv("mapcall_" + on + ".csv").loc[:, '0':].to_numpy()[...,0]
             targetcond = mapcond[mapindex]
             index = (cond < targetcond).astype(int).sum(-1)
+            # this approach can lead to small deviations from the desired norm. saves model storing
+            # mostly unnoticeable (ie norm==4.99 instead of 5.0)
+            index = index if not name_map["mani_laplace_exact"] in n else index - 1
             pda = pd.DataFrame(np.linalg.norm(samples[index], axis=-1, ord=1))
             pda = pda.melt(value_name="norm")
             pda["source"] = n
@@ -521,9 +557,15 @@ def path_print(variant):
 
         match variant:
             case "trace_norm" | 0:
-                plot_betas_lambda(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, sigma=sigma_regr, gt_only=False,
-                                  min_bin=None, max_bin=None, n_bins=51, norm=1, conf=0.95, n_plots=1,
-                                  gt='linear_regression', true_coeff=None, name=of+("_betas" if not map_data else "_betas_map"))
+                if map_data:
+                    smoothed = samples#moving_average(samples, 20, 5.0)
+                    plot_betas_lambda(samples=smoothed[::subsample_for_path], lambdas=cond[::subsample_for_path], X_np=X_np, y_np=y_np, sigma=sigma_regr, gt_only=False,
+                                      min_bin=None, max_bin=None, n_bins=51, norm=1, conf=0.95, n_plots=1,
+                                      gt='linear_regression', true_coeff=None, name=of + ("_betas" if not map_data else "_betas_map"))
+                else:
+                    plot_betas_lambda(samples=samples[::subsample_for_path], lambdas=cond[::subsample_for_path], X_np=X_np, y_np=y_np, sigma=sigma_regr, gt_only=False,
+                                      min_bin=None, max_bin=None, n_bins=51, norm=1, conf=0.95, n_plots=1,
+                                      gt='linear_regression', true_coeff=None, name=of+("_betas" if not map_data else "_betas_map"))
                 sns.boxplot(data=dm, y="coeff", x="value", fliersize=0)
                 plt.title(n)
                 plt.savefig(of + "_norms.pdf", format='pdf')
@@ -539,40 +581,6 @@ def path_print(variant):
             sns.violinplot(data=dma, x="norm", y="source")
             plt.tight_layout()
             plt.savefig(of + "all_std_norms.pdf", format='pdf')
-            plt.show()
-
-            dm = dms[name_map["mani_laplace_exact"]]
-            sns.set(style="whitegrid")
-            fig = plt.figure(figsize=(5,5))
-            ax = fig.add_subplot(111, projection='3d')
-
-            dm = dm.reshape(-1,5)
-            dat = dm[:,:3]
-            # this is a hacky way to show 5 dim samples on the manifold in 3 dim space
-            dat = np.linalg.norm(dm, axis=-1, ord=1, keepdims=True) * dat / np.linalg.norm(dat, axis=-1, ord=1, keepdims=True)
-            # the norm manifold
-            vertices = 5.0 * np.array([[0., 0., 1.], [1., 0., 0.], [0., 1., 0.], [-1., 0., 0.], [0., -1., 0.], [0., 0., -1.]])
-            faces = [[vertices[0], vertices[1], vertices[2]],
-                     [vertices[0], vertices[2], vertices[3]],
-                     [vertices[0], vertices[3], vertices[4]],
-                     [vertices[0], vertices[4], vertices[1]],
-                     [vertices[5], vertices[1], vertices[2]],
-                     [vertices[5], vertices[2], vertices[3]],
-                     [vertices[5], vertices[3], vertices[4]],
-                     [vertices[5], vertices[4], vertices[1]]]
-
-            # Define the faces of the diamond
-            poly3d = Poly3DCollection(faces, facecolors='#789cb330', linewidths=0)#1, edgecolors='#789cb390')
-            ax.add_collection3d(poly3d)
-            ax.plot([0, 0, 0, 5, 0], [-5, 0, 5, 0, -5], [0, 5, 0, 0, 0], c='#789cb390', zorder=1)
-            ax.plot([0, -5, 0, 5, 0, 0], [-5, 0, 0, 0, 0, -5], [0, 0, 5, 0, -5, 0], c='#789cb390', zorder=1)
-
-            # the samples of the norm
-            ax.scatter(dat[:2000, 1], -dat[:2000, 0], -dat[:2000, 2], c=np.abs(dat[:2000, 0]) + np.abs(dat[:2000, 2]), cmap='Blues', s=8, zorder=5, marker="o", edgecolors='none')
-            ax.grid(False)
-            ax._axis3don = False
-
-            plt.savefig(of + "surface_mani.pdf", format='pdf')
             plt.show()
 
 
@@ -629,7 +637,9 @@ monotonic_act = ""
 on_manifold = True
 if __name__ == "__main__":
     monotonic_act = "laplace_exact"
+    to_use_log_cond = False
     main()
+    to_use_log_cond = True
     on_manifold = False
     main()
     monotonic_act = "square_offset"

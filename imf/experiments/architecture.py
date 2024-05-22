@@ -614,7 +614,7 @@ def build_circular_cond_flow_l1_manifold(args, star_like=False):
     if not star_like:
         transformation_layers.append(PositiveL1ManifoldFlow(logabs_jacobian=args.logabs_jacobian))
     else:
-        transformation_layers.append(LpManifoldFlow(logabs_jacobian=args.logabs_jacobian, p=1, norm=args.norm))
+        transformation_layers.append(CondLpManifoldFlow(logabs_jacobian=args.logabs_jacobian, p=1, norm=args.norm))
 
     transformation_layers = transformation_layers[::-1]
     transform = CompositeTransform(transformation_layers)
