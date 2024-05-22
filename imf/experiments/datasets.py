@@ -2,7 +2,7 @@ import os
 import torch
 import numpy as np
 import scipy as sp
-import rpy2.robjects as robjects
+#import rpy2.robjects as robjects
 
 from imf.experiments.utils_manifold import cartesian_to_spherical_torch
 from imf.experiments.vonmises_fisher import vMF, MixvMF
@@ -204,12 +204,8 @@ class UniformCheckerboard(Uniform):
 
         return mask
 
+'''
 class LpUniform(Uniform):
-    '''
-    Note: the surface of a Lp unit ball is not known analytically because it requires a complicated integral
-          (see https://en.wikipedia.org/wiki/Volume_of_an_n-ball#Relation_with_surface_area_2),
-          so log_density returns a constant value, which is however not the correct one
-    '''
     def __init__(self, args):
         super().__init__(args)
 
@@ -235,7 +231,6 @@ class LpUniform(Uniform):
         # breakpoint()
         return arr / norm_stable
 
-
 def create_dataset(args):
     if args.dataset == 'uniform':
         dataset = Uniform(args)
@@ -253,6 +248,7 @@ def create_dataset(args):
         raise ValueError('Dataset {} not recognized'.format(args.dataset))
 
     return dataset
+'''
 
 from sklearn.linear_model import LinearRegression, Lasso, Ridge
 from sklearn.datasets import load_diabetes
@@ -289,7 +285,7 @@ def load_diabetes_dataset(device='cuda'):
 
 
 def generate_regression_dataset(n_samples, n_features, n_non_zero, noise_std):
-    assert n_features > n_non_zero
+    assert n_features >= n_non_zero
 
     # Generate non-zero coefficients randomly
     non_zero_indices = np.random.choice(n_features, n_non_zero, replace=False)
@@ -304,7 +300,7 @@ def generate_regression_dataset(n_samples, n_features, n_non_zero, noise_std):
     X = np.random.multivariate_normal(mean=np.zeros(n_features), cov=covariance, size=n_samples)
 
     # Generate response variable y
-    y = np.dot(X, coefficients) + np.random.normal(0, noise_std**2, n_samples)  # Linear regression model with Gaussian noise
+    y = np.dot(X, coefficients) + np.random.normal(0, noise_std, n_samples)  # Linear regression model with Gaussian noise
 
     # compute regression parameters
     reg = LinearRegression().fit(X, y)
