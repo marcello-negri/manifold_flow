@@ -2,12 +2,14 @@ import os
 from collections import Counter
 
 import matplotlib.pyplot as plt
+import numpy
 import numpy as np
 import seaborn as sns
 import torch
 import tqdm
 from sklearn.decomposition import PCA
 from sklearn.linear_model import Ridge, LogisticRegression, lasso_path
+import pandas as pd
 
 from imf.experiments.utils_manifold import cartesian_to_spherical_torch
 
@@ -469,3 +471,23 @@ def plot_marginal_likelihood (kl_sorted, cond_sorted, args):
     plt.show()
 
     return opt_cond
+
+
+'''
+takes numpy array of size nx3 and creates a 2d scatter plot 
+'''
+def plot_dirichlet3dproj(x, max_num = 5000):
+    ones = numpy.ones(3)
+    svd = numpy.linalg.svd(np.outer(ones,ones))
+    proj = svd.U[:,1:]  # matrix of size 3x2
+    xproj = x @ proj
+
+    np.random.shuffle(xproj)
+    xproj = xproj[:max_num]
+
+    df = pd.DataFrame(xproj, columns=['x', 'y'])
+    sns.set_style("whitegrid")
+    sns.scatterplot(data=df, x='x', y='y', alpha=0.1)
+
+    plt.show()
+
