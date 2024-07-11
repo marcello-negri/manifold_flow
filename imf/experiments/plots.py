@@ -474,12 +474,12 @@ def plot_marginal_likelihood (kl_sorted, cond_sorted, args):
 
 
 '''
-takes numpy array of size nx3 and creates a 2d scatter plot 
+takes numpy array of size nxd and creates a 2d scatter plot
 '''
-def plot_dirichlet3dproj(x, max_num = 5000):
-    ones = numpy.ones(3)
+def plot_dirichlet_proj(x, max_num = 5000):
+    ones = numpy.ones(x.shape[-1])
     svd = numpy.linalg.svd(np.outer(ones,ones))
-    proj = svd.U[:,1:]  # matrix of size 3x2
+    proj = svd.U[:,1:3]  # matrix of size dx2
     xproj = x @ proj
 
     np.random.shuffle(xproj)

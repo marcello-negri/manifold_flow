@@ -18,7 +18,7 @@ class Markov_dirichlet(ABC):
         self.curp = None
         self.chains = init_x.shape[0]
         self.dim = init_x.shape[1]
-        grid_alpha, grid_steps = torch.meshgrid(proposal_alphas, step_sizes)
+        grid_alpha, grid_steps = torch.meshgrid(proposal_alphas, step_sizes, indexing='ij')
         self.alphas = proposal_alphas
         self.step_sizes = step_sizes
         self.grid_alpha = grid_alpha
@@ -35,11 +35,7 @@ class Markov_dirichlet(ABC):
         return proposed_scaled
 
     def eps_border(self, x, eps=1e-13):
-        maskleq = x < 1.0-eps
-        maskbeq = x > 0.0+eps
-        x = torch.where(maskleq, x, 1.0-eps)
-        x = torch.where(maskbeq, x, 0.0+eps)
-        return x
+        return torch.clamp(x, min=0.0+eps, max=1.0-eps)
 
     def transition(self, tox, fromx):
         tox = self.eps_border(tox)
@@ -82,15 +78,31 @@ class Test(Markov_dirichlet):
 
     def __init__(self, init_x, proposal_alphas, step_sizes):
         super().__init__(init_x, proposal_alphas, step_sizes)
-        loc = torch.zeros(self.dim, device=self.device, dtype=self.dtype)
-        loc[0] = 1.0
-        self.dist_p = MultivariateNormal(loc, covariance_matrix=0.1 * torch.diag(torch.ones(self.dim, device=self.device, dtype=self.dtype)))
-        self.alpha = torch.tensor([0.01], device=self.device, dtype=self.dtype)
+        self.prior_alpha = 1.0  # TODO adjust
+        self.alpha = torch.tensor([self.prior_alpha], device=self.device, dtype=self.dtype)
         self.struct = Struct({'log_cond':False})
+        self.true_sigma = 0.11  # TODO adjust
+        self.my_sigma = 0.1  # TODO adjust
+        self.n = 10  # TODO adjust
+        self.x, self.y = self.generate_regression_simplex(self.n, self.dim, sigma=self.true_sigma)
+
+    def generate_regression_simplex(self, n, d, sigma):
+        X_np = np.random.randn(n, d)
+        beta = np.random.rand(d)
+        beta /= beta.sum()
+        y_np = X_np @ beta + np.random.randn(n) * sigma
+
+        return torch.tensor(X_np, device=self.device, dtype=self.dtype), torch.tensor(y_np, device=self.device, dtype=self.dtype)
+
+    def gaussian_log_likelihood(self, beta: torch.Tensor, X: torch.Tensor, y: torch.Tensor):
+        eps = 1e-11
+        log_lk = - 0.5 * (y - beta @ X.T).square().sum(-1) / (self.my_sigma ** 2 + eps)
+        log_lk_const = - X.shape[0] * np.log((self.my_sigma + eps) * np.sqrt(2. * np.pi))
+
+        return log_lk + log_lk_const
 
     def log_p(self, x):
-        #p = self.dist_p.log_prob(x)
-        p = dirichlet_prior(x, self.alpha, self.struct)
+        p = self.gaussian_log_likelihood(x, self.x, self.y) + dirichlet_prior(x, self.alpha, self.struct)
         return p
 
 
@@ -98,43 +110,44 @@ device = "cuda"
 dtype = torch.float64
 burnin = 10000
 chains = 10000
-dim = 3
-num_samples = 2000
-subsample = 200
-alphas_proposal = [0.01, 0.5]#[0.1,1.0,10.0]
-steps_proposal = [0.1,0.2,1.0]#[0.1,0.2,0.5,1.0]
+dim = 50  # TODO adjust
+iterations = 20000
+subsample = 2000
+alphas_proposal = [0.1, 0.5, 1.0]
+# important to have 1.0 in the steps for successful sampling
+steps_proposal = [0.1,0.2,0.5,1.0]
+init_alpha = torch.tensor([1.0], device=device, dtype=dtype)  # TODO adjust
 
-init = torch.ones((chains,dim), device=device, dtype=dtype)
-init = init / torch.norm(init, dim=-1, p=1, keepdim=True)
+init = get_dirichlet_samples(init_alpha, chains, dim)[0]
 alphas = torch.tensor(alphas_proposal, device=device, dtype=dtype)
 steps_sizes = torch.tensor(steps_proposal, device=device, dtype=dtype)
 test = Test(init, alphas, steps_sizes)
 
 it = test.iterator()
+startt = os.times()
 for i in range(burnin):
     next(it)
-    if i % 100 == 0:
+    if i % 500 == 0:
         print("burnin", i)
 
 # here all the samples are stored on the cpu
-samples = torch.zeros((num_samples//subsample, chains, dim), dtype=dtype)
-startt = os.times()
-for i in range(num_samples):
+samples = torch.zeros((iterations // subsample, chains, dim), dtype=dtype)
+for i in range(iterations):
     if i % subsample == 0:
         samples[i//subsample] = next(it)[0].detach().cpu()
     else:
         next(it)
-    if i % 100 == 0:
+    if i % 500 == 0:
         print("iteration ", i)
 endt = os.times()
 dt = endt.user + endt.system - startt.user - startt.system
-print("elapsed time ", dt)
+print(f"elapsed time for {(burnin + iterations) * chains} total samples taken over {burnin + iterations} iterations in total:", dt)
 
-from imf.experiments.plots import plot_dirichlet3dproj
+from imf.experiments.plots import plot_dirichlet_proj
 
 samples = samples.view((-1, dim))
-if dim == 3:
-    plot_dirichlet3dproj(samples.numpy())
+print(f"effectively created {samples.shape[0]} total samples at subsampling of {subsample}")
+plot_dirichlet_proj(samples.numpy())
 
 #samplesdirect = get_dirichlet_samples(test.alpha, 5000, 3)  # has issues for small alphas -> if all 0 then normalization is terrible
 #plot_dirichlet3dproj(samplesdirect.view(-1,3).detach().cpu().numpy())
