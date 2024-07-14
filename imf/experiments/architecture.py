@@ -113,18 +113,16 @@ def build_flow_reverse(args, clamp_theta=False):
     return flow
 
 def build_flow_circular_fwd(flow_dim, n_layers=3, hidden_features=256, device='cuda'):
-    torch_one = torch.ones(1, device=device)
-    base_dist = Uniform(shape=[flow_dim - 1], low=-torch_one, high=torch_one)
+    # torch_one = torch.ones(1, device=device)
+    # base_dist = Uniform(shape=[flow_dim - 1], low=-torch_one, high=torch_one)
+    base_dist = UniformSphere(shape=[flow_dim - 1])
 
     # Define an invertible transformation
     transformation_layers = []
 
     transformation_layers.append(
-        ScaleLastDim(scale=0.5)
-    )
-
-    transformation_layers.append(
         CompositeTransform([
+            ScaleLastDim(scale=0.5),
             ScalarScale(scale= 2./np.pi, trainable=False),
             ScalarShift(shift=-1., trainable=False),
         ])
@@ -148,6 +146,14 @@ def build_flow_circular_fwd(flow_dim, n_layers=3, hidden_features=256, device='c
                                                       ind_circ=[i for i in range(flow_dim - 1)])
             )
         )
+
+    transformation_layers.append(
+        CompositeTransform([
+            ScalarShift(shift=1., trainable=False),
+            ScalarScale(scale=0.5 * np.pi, trainable=False),
+            ScaleLastDim(scale=2)
+        ])
+    )
 
     return base_dist, transformation_layers
 
@@ -546,6 +552,66 @@ def build_simple_cond_flow_l1_manifold(args, n_layers, n_hidden_features, n_cont
             ])
         )
     )
+
+    transformation_layers.append(PositiveL1ManifoldFlow(logabs_jacobian=args.logabs_jacobian))
+
+    transformation_layers = transformation_layers[::-1]
+    transform = CompositeTransform(transformation_layers)
+
+    # define embedding (conditional) network
+    embedding_net = ResidualNetInput(in_features=1, out_features=n_context_features, hidden_features=64,
+                                     num_blocks=3, activation=torch.nn.functional.relu)
+
+    # combine into a flow
+    flow = Flow(transform, base_dist, embedding_net=embedding_net).to(args.device)
+
+    return flow
+
+def build_simple_circular_cond_flow_l1_manifold(args, n_layers, n_hidden_features, n_context_features):
+    # torch_one = torch.ones(1, device=args.device)
+    # base_dist = Uniform(shape=[args.datadim - 1], low=torch_one * 0, high=torch_one * 0.5 * torch.pi)
+    # base_dist = MultimodalUniform(shape=[flow_dim - 1], low=-torch_one, high=torch_one, n_modes=2)
+    # base_dist = UniformSphere(shape=[args.datadim - 1], all_positive=True)
+    base_dist = UniformSimplex(shape=[args.datadim - 1], extend_star_like=False)
+    # n_modes = 20
+    # base_dist = MOG(means=torch.rand((n_modes, flow_dim-1), device=device)*2-1,
+    #                 stds=torch.ones((n_modes, flow_dim-1), device=device)*0.05, low=-1, high=1)
+
+    # base_dist = StandardNormal(shape=[flow_dim-1])
+    # base_dist = UniformGaussian(ndim=flow_dim - 1, ind=-1)
+
+    # Define an invertible transformation
+    transformation_layers = []
+
+    transformation_layers.append(
+        InverseTransform(
+            CompositeTransform([ScalarScale(scale=4 / torch.pi, trainable=False, eps=0),
+                                ScalarShift(shift=-1, trainable=False)
+                                ])
+        )
+    )
+
+    for _ in range(n_layers):
+        # transformation_layers.append(RandomPermutation(features=flow_dim - 1))
+        transformation_layers.append(
+                CircularAutoregressiveRationalQuadraticSpline(num_input_channels=args.datadim - 1,
+                                                      num_hidden_channels=n_hidden_features,
+                                                      num_context_channels=n_context_features,
+                                                      num_blocks=3, num_bins=8, tail_bound=1,
+                                                      ind_circ=[i for i in range(args.datadim - 1)]
+                                                      )
+        )
+
+    transformation_layers.append(
+        InverseTransform(
+            CompositeTransform([ScalarScale(scale=1 - 1e-4, trainable=False, eps=0),
+                                ScalarShift(shift=1., trainable=False),
+                                ScalarScale(scale=0.25 * torch.pi, trainable=False, eps=0)
+                                ])
+        )
+    )
+
+    #transformation_layers.append(InverseTransform(ClampedThetaPositive(eps=1e-10)))
 
     transformation_layers.append(PositiveL1ManifoldFlow(logabs_jacobian=args.logabs_jacobian))
 

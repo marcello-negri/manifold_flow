@@ -59,7 +59,7 @@ class VonMisesFisher(Dataset):
             self.mu = mu * self.args.mu
 
     def initialize_vMF(self):
-        self.vMF = vMF(x_dim=self.mu.shape[0])
+        self.vMF = vMF(x_dim=self.mu.shape[0], device=self.args.device)
         self.vMF.set_params(mu=self.mu, kappa=self.kappa)
 
     def norm(self, input, p=2, dim=0, eps=1e-12):

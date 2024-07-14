@@ -75,14 +75,13 @@ class vMF(nn.Module):
     vMF(x; mu, kappa)
     '''
 
-    def __init__(self, x_dim, reg=1e-6, seed=1234):
+    def __init__(self, x_dim, device='cuda', reg=1e-6, seed=1234):
 
         super(vMF, self).__init__()
 
         self.x_dim = x_dim
-
-        self.mu_unnorm = nn.Parameter(torch.randn(x_dim))
-        self.logkappa = nn.Parameter(0.01 * torch.randn([]))
+        self.mu_unnorm = nn.Parameter(torch.randn(x_dim, device=device))
+        self.logkappa = nn.Parameter(0.01 * torch.randn([], device=device))
 
         self.reg = reg
 

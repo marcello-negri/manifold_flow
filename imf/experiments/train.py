@@ -109,7 +109,7 @@ def main():
         flow.eval()
 
     # evaluate learnt distribution
-    samples_flow, log_probs_flow = generate_samples(flow, sample_size=100, n_iter=100)
+    samples_flow, log_probs_flow = generate_samples(flow, args=args, sample_size=100, n_iter=100)
     plot_icosphere(data=train_data_np, dataset=dataset, flow=flow, samples_flow=samples_flow, rnf=None, samples_rnf=None, device='cuda', args=args, plot_rnf=False)
     if args.dataset == "uniform":
         plot_pairwise_angle_distribution(samples_flow, n_samples=1000)

@@ -91,6 +91,7 @@ def plot_icosphere(data, dataset, flow, samples_flow, rnf, samples_rnf, kde=Fals
             logp_rnf = partial(density_rnf, rnf=rnf, args=args)
             plot_logp(ax23, logp_function=logp_rnf, points_surface=points_surface_rnf, title="rnf")
 
+    plt.savefig(f"./experiments/plots/density_plot.pdf", dpi=300)
     plt.show()
 
 def map_colors(p3dc, func, kde=False, cmap='viridis'):
@@ -348,7 +349,7 @@ def plot_samples_pca(samples_flow, samples_gt, filename=None):
 
 def load_mesh():
     # mesh = meshio.read("icosphere/icoSphereDetail.stl")
-    mesh = meshio.read("icosphere/icosphere40.stl")
+    mesh = meshio.read("./experiments/icosphere/icosphere40.stl")
     mesh.points = mesh.points - mesh.points.mean(0) # center the sphere
 
     return mesh
@@ -905,13 +906,21 @@ def plot_marginal_likelihood (kl_sorted, cond_sorted, args):
     ax.plot(cond_sorted, mll_mean)
     ax.fill_between(cond_sorted, mll_l, mll_r, alpha=0.5)
 
-    max_mll = np.argmax(mll_mean)
-    opt_cond = cond_sorted[max_mll]
+    opt_idx = np.argmax(mll_mean)
+    opt_cond = cond_sorted[opt_idx]
     plt.vlines(opt_cond, ymin=mll_l.min(), ymax=mll_r.max())
     if args.log_cond: plt.xscale('log')
     plt.show()
 
-    return opt_cond
+    return opt_cond, opt_idx
+
+def plot_marginals (samples, idx, name_dict, n_bins=50):
+    fig, ax = plt.subplots(figsize=(14, 7))
+    for i in range(samples.shape[-1]):
+        ax.hist(samples[idx, :, i], bins=n_bins, range=(0, 1), label=name_dict[i], alpha=0.5, density=True)
+    plt.legend()
+    plt.savefig("./wolves_marginals.pdf")
+    plt.show()
 
 def plot_clusters(samples, cond, cond_indices, n_clusters):
     from sklearn.decomposition import PCA
