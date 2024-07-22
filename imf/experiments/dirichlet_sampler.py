@@ -85,6 +85,12 @@ class Test(Markov_dirichlet):
         self.my_sigma = 0.1  # TODO adjust
         self.n = 10  # TODO adjust
         self.x, self.y = self.generate_regression_simplex(self.n, self.dim, sigma=self.true_sigma)
+        self.type = 1  # TODO adjust: 0->regression_simplex 1->mixture_of_gaussian
+        # TODO adjust -> concat of different alphas
+        self.mixalphasamples = 4
+        self.mixtures = get_dirichlet_samples(torch.tensor([0.8,1.0], device=self.device, dtype=self.dtype), self.mixalphasamples, self.dim).reshape(-1, self.dim)
+        self.nmixes = self.mixtures.shape[0]
+        self.stdv2 = 0.0001  # TODO adjust
 
     def generate_regression_simplex(self, n, d, sigma):
         X_np = np.random.randn(n, d)
@@ -102,26 +108,38 @@ class Test(Markov_dirichlet):
         return log_lk + log_lk_const
 
     def log_p(self, x):
-        p = self.gaussian_log_likelihood(x, self.x, self.y) + dirichlet_prior(x, self.alpha, self.struct)
+        if self.type == 0:
+            p = self.gaussian_log_likelihood(x, self.x, self.y) + dirichlet_prior(x, self.alpha, self.struct)
+        elif self.type == 1:
+            xx = x.reshape(-1, self.dim)
+            mixes = self.mixtures.unsqueeze(0).expand(xx.shape[0], self.nmixes, self.dim)
+            xx = xx.unsqueeze(1).expand(xx.shape[0], self.nmixes, self.dim)
+            diff = xx - mixes
+            mahalanobis_dist_sq = torch.sum((diff ** 2) / self.stdv2, dim=2)
+            log_prob_each = -0.5 * (self.dim * np.log(2 * np.pi) + mahalanobis_dist_sq)
+            p = torch.logsumexp(log_prob_each, dim=1) - torch.log(torch.tensor(self.nmixes, device=self.device, dtype=self.dtype))
         return p
 
 
 device = "cuda"
 dtype = torch.float64
-burnin = 10000
+burnin = 1000
 chains = 10000
-dim = 50  # TODO adjust
-iterations = 20000
-subsample = 2000
-alphas_proposal = [0.1, 0.5, 1.0]
+dim = 20  # TODO adjust
+iterations = 5000
+subsample = 1000
+alphas_proposal = [0.2, 1.0]
 # important to have 1.0 in the steps for successful sampling
-steps_proposal = [0.1,0.2,0.5,1.0]
+steps_proposal = [0.005,0.05,0.2,1.0]
 init_alpha = torch.tensor([1.0], device=device, dtype=dtype)  # TODO adjust
 
 init = get_dirichlet_samples(init_alpha, chains, dim)[0]
 alphas = torch.tensor(alphas_proposal, device=device, dtype=dtype)
 steps_sizes = torch.tensor(steps_proposal, device=device, dtype=dtype)
 test = Test(init, alphas, steps_sizes)
+
+if test.type == 1:
+    print(f"bins for the gaussians <{1.5 * np.sqrt(test.stdv2) * np.sqrt(test.dim)} -> total area *{test.nmixes}: {1.5 * np.sqrt(test.stdv2) * np.sqrt(test.dim) * test.nmixes}")
 
 it = test.iterator()
 startt = os.times()
@@ -143,7 +161,7 @@ endt = os.times()
 dt = endt.user + endt.system - startt.user - startt.system
 print(f"elapsed time for {(burnin + iterations) * chains} total samples taken over {burnin + iterations} iterations in total:", dt)
 
-from imf.experiments.plots import plot_dirichlet_proj
+from imf.experiments.plots import plot_dirichlet_proj, plot_hist
 
 samples = samples.view((-1, dim))
 print(f"effectively created {samples.shape[0]} total samples at subsampling of {subsample}")
@@ -151,6 +169,17 @@ plot_dirichlet_proj(samples.numpy())
 
 #samplesdirect = get_dirichlet_samples(test.alpha, 5000, 3)  # has issues for small alphas -> if all 0 then normalization is terrible
 #plot_dirichlet3dproj(samplesdirect.view(-1,3).detach().cpu().numpy())
+
+if test.type == 1:
+    print(f"total samples for the bin creation {samples.shape[0]}")
+    mixes = test.mixtures.to(device='cpu').unsqueeze(0).expand(samples.shape[0], test.nmixes, test.dim)
+    xx = samples.unsqueeze(1).expand(samples.shape[0], test.nmixes, test.dim)
+    diff = xx - mixes
+    diff_mask = torch.linalg.vector_norm(diff, dim=-1) < 1.5 * np.sqrt(test.stdv2) * np.sqrt(test.dim)
+    per_mode = torch.count_nonzero(diff_mask, dim=0)
+    plot_hist(per_mode.numpy())
+
+
 
 
 print("done")

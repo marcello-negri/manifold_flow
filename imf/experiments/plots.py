@@ -491,3 +491,9 @@ def plot_dirichlet_proj(x, max_num = 5000):
 
     plt.show()
 
+def plot_hist(x):
+    x = x.flatten()
+    plt.bar(np.arange(x.shape[0]), x)
+
+    plt.show()
+
