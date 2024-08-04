@@ -198,7 +198,7 @@ class MixvMF(nn.Module):
 
         self.alpha_logit = nn.Parameter(0.01 * torch.randn(order))
         self.comps = nn.ModuleList(
-            [vMF(x_dim, reg) for _ in range(order)]
+            [vMF(x_dim, reg=reg) for _ in range(order)]
         )
 
     def set_params(self, alpha, mus, kappas):

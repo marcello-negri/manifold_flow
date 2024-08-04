@@ -7,7 +7,7 @@ from normflows.flows.neural_spline.wrapper import AutoregressiveRationalQuadrati
 from normflows.distributions.base import UniformGaussian
 
 from enflows.transforms import Sigmoid, Tanh
-from enflows.distributions import StandardNormal, Uniform
+from enflows.distributions import StandardNormal, Uniform, DiagonalNormal
 from enflows.distributions.normal import MOG
 from enflows.nn.nets.resnet import ConvResidualNet, ResidualNet
 from enflows.distributions.uniform import UniformSphere, MultimodalUniform, UniformSimplex
@@ -18,11 +18,70 @@ from enflows.transforms.base import CompositeTransform, InverseTransform
 from enflows.nn.nets import Sin
 from enflows.flows.base import Flow
 from enflows.transforms.lipschitz import LipschitzDenseNetBuilder, iResBlock
-from enflows.transforms.injective import (ConstrainedAnglesSigmoid, ClampedTheta, ClampedThetaPositive, LearnableManifoldFlow,
-                                          SphereFlow, LpManifoldFlow, ScaleLastDim, ResidualNetInput, CondLpManifoldFlow, PositiveL1ManifoldFlow)
+from enflows.transforms.injective import (ConstrainedAnglesSigmoid, ClampedTheta, ClampedThetaPositive, LearnableManifoldFlow, LearnableParamHyperFlow,
+                                          SphereFlow, LpManifoldFlow, ScaleLastDim, ResidualNetInput, CondLpManifoldFlow, PositiveL1ManifoldFlow,)
 from enflows.transforms.linear import ScalarScale, ScalarShift
 from enflows.transforms.svd import SVDLinear
 
+def build_paramhyper_flow_forward(args):
+    transformation_layers = []
+
+    base_dist = StandardNormal(shape=[args.datadim - 1])
+    manifold_mapping = LearnableParamHyperFlow(n=args.datadim - 1)
+    transformation_layers.append(manifold_mapping)
+
+    # densenet_builder = LipschitzDenseNetBuilder(input_channels=args.datadim - 1, densenet_depth=3,
+    #                                             activation_function=Sin(w0=1), lip_coeff=.97, )
+
+    for _ in range(args.n_layers):
+        # transformation_layers.append(RandomPermutation(features=args.datadim - 1))
+        # transformation_layers.append(SVDLinear(features= flow_dim - 1, num_householder=4))
+
+        transformation_layers.append(
+            MaskedSumOfSigmoidsTransform(features=args.datadim - 1, hidden_features=args.n_hidden_features, num_blocks=3,
+                                         n_sigmoids=30)
+        )
+        transformation_layers.append(ActNorm(features=args.datadim - 1))
+
+        # transformation_layers.append(iResBlock(densenet_builder.build_network(), brute_force=True))
+
+    transform = CompositeTransform(transformation_layers)
+
+    # combine into a flow
+    flow = Flow(transform, base_dist).to(args.device)
+
+    return flow
+
+def build_paramhyper_flow_forward_(args):
+    transformation_layers = []
+
+    # base_dist = StandardNormal(shape=[args.datadim-1])
+    base_dist = DiagonalNormal(shape=[args.datadim-1])
+    # base_dist = Uniform(shape=[args.datadim-1], low=0, high=1)
+
+    densenet_builder = LipschitzDenseNetBuilder(input_channels=args.datadim, densenet_depth=3,
+                                                activation_function=Sin(w0=8), lip_coeff=.97, )
+
+    for _ in range(args.n_layers):
+        # transformation_layers.append(RandomPermutation(features=args.datadim - 1))
+        # transformation_layers.append(SVDLinear(features= args.datadim, num_householder=4))
+
+        # transformation_layers.append(
+        #     MaskedSumOfSigmoidsTransform(features=args.datadim, hidden_features=args.n_hidden_features, num_blocks=3,
+        #                                  n_sigmoids=30)
+        # )
+        transformation_layers.append(iResBlock(densenet_builder.build_network(), brute_force=False))
+        transformation_layers.append(ActNorm(features=args.datadim))
+
+
+    transformation_layers.append(LearnableParamHyperFlow(n=args.datadim - 1))
+
+    transform = CompositeTransform(transformation_layers)
+
+    # combine into a flow
+    flow = Flow(transform, base_dist).to(args.device)
+
+    return flow
 
 def build_flow_forward(args, clamp_theta=False):
     transformation_layers = []
@@ -129,26 +188,27 @@ def build_flow_circular_fwd(flow_dim, n_layers=3, hidden_features=256, device='c
     )
 
     for _ in range(n_layers):
-        # transformation_layers.append(RandomPermutation(features=flow_dim - 1))
-        # transformation_layers.append(
-        #     InverseTransform(
-        #         CircularAutoregressiveRationalQuadraticSpline(num_input_channels=flow_dim - 1,
-        #                                                       num_hidden_channels=hidden_features,
-        #                                                       num_blocks=3, num_bins=10, tail_bound=1,
-        #                                                       ind_circ=[i for i in range(flow_dim - 1)])
-        #     )
-        # )
+        transformation_layers.append(RandomPermutation(features=flow_dim - 1))
         transformation_layers.append(
             InverseTransform(
-                CircularCoupledRationalQuadraticSpline(num_input_channels=flow_dim - 1,
-                                                      num_hidden_channels=hidden_features,
-                                                      num_blocks=3, num_bins=10, tail_bound=1,
-                                                      ind_circ=[i for i in range(flow_dim - 1)])
+                CircularAutoregressiveRationalQuadraticSpline(num_input_channels=flow_dim - 1,
+                                                              num_hidden_channels=hidden_features,
+                                                              num_blocks=3, num_bins=5, tail_bound=1,
+                                                              ind_circ=[i for i in range(flow_dim - 1)])
             )
         )
+        # transformation_layers.append(
+        #     InverseTransform(
+        #         CircularCoupledRationalQuadraticSpline(num_input_channels=flow_dim - 1,
+        #                                               num_hidden_channels=hidden_features,
+        #                                               num_blocks=3, num_bins=10, tail_bound=1,
+        #                                               ind_circ=[i for i in range(flow_dim - 1)])
+        #     )
+        # )
 
     transformation_layers.append(
         CompositeTransform([
+            ScalarScale(scale=1 - 1e-3, trainable=False, eps=0),
             ScalarShift(shift=1., trainable=False),
             ScalarScale(scale=0.5 * np.pi, trainable=False),
             ScaleLastDim(scale=2)
@@ -684,5 +744,60 @@ def build_circular_cond_flow_l1_manifold(args):
 
     # combine into a flow
     flow = Flow(transform, base_dist, embedding_net=embedding_net).to(args.device)
+
+    return flow
+
+def build_circular_flow_l1_manifold(args):
+    # torch_one = torch.ones(1, device=args.device)
+    # base_dist = Uniform(shape=[args.datadim - 1], low=torch_one * 0, high=torch_one * 0.5 * torch.pi)
+    # base_dist = MultimodalUniform(shape=[flow_dim - 1], low=-torch_one, high=torch_one, n_modes=2)
+    # base_dist = UniformSphere(shape=[args.datadim - 1], all_positive=True)
+    base_dist = UniformSimplex(shape=[args.datadim - 1], extend_star_like=False)
+    # n_modes = 20
+    # base_dist = MOG(means=torch.rand((n_modes, flow_dim-1), device=device)*2-1,
+    #                 stds=torch.ones((n_modes, flow_dim-1), device=device)*0.05, low=-1, high=1)
+
+    # base_dist = StandardNormal(shape=[flow_dim-1])
+    # base_dist = UniformGaussian(ndim=flow_dim - 1, ind=-1)
+
+    # Define an invertible transformation
+    transformation_layers = []
+
+    transformation_layers.append(
+        InverseTransform(
+            CompositeTransform([ScalarScale(scale=4 / torch.pi, trainable=False, eps=0),
+                                ScalarShift(shift=-1, trainable=False)
+                                ])
+        )
+    )
+
+    for _ in range(args.n_layers):
+        # transformation_layers.append(RandomPermutation(features=flow_dim - 1))
+        transformation_layers.append(
+                CircularAutoregressiveRationalQuadraticSpline(num_input_channels=args.datadim - 1,
+                                                      num_hidden_channels=args.n_hidden_features,
+                                                      num_blocks=3, num_bins=8, tail_bound=1,
+                                                      ind_circ=[i for i in range(args.datadim - 1)]
+                                                      )
+        )
+
+    transformation_layers.append(
+        InverseTransform(
+            CompositeTransform([ScalarScale(scale=1 - 1e-4, trainable=False, eps=0),
+                                ScalarShift(shift=1., trainable=False),
+                                ScalarScale(scale=0.25 * torch.pi, trainable=False, eps=0)
+                                ])
+        )
+    )
+
+    #transformation_layers.append(InverseTransform(ClampedThetaPositive(eps=1e-10)))
+
+    transformation_layers.append(PositiveL1ManifoldFlow(logabs_jacobian=args.logabs_jacobian))
+
+    transformation_layers = transformation_layers[::-1]
+    transform = CompositeTransform(transformation_layers)
+
+    # combine into a flow
+    flow = Flow(transform, base_dist).to(args.device)
 
     return flow

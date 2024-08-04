@@ -52,14 +52,6 @@ def set_random_seeds (seed=1234):
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-def gaussian_log_likelihood(beta: torch.Tensor, sigma: torch.Tensor, X: torch.Tensor, y: torch.Tensor, ):
-    # implements Gaussian log-likelihood beta ~ Normal (X@beta, sigma^2 ID)
-    eps = 1e-7
-    log_lk = - 0.5 * (y - beta @ X.T).square().sum(-1) / (sigma**2 + eps)
-    log_lk_const = - X.shape[0] * torch.log((sigma + eps) * np.sqrt(2. * np.pi))
-
-    return log_lk + log_lk_const
-
 def dirichlet_prior(beta: torch.Tensor, alpha: torch.Tensor, args):
     if args.log_cond: alpha_ = 10 ** alpha
     else: alpha_ = alpha
@@ -70,65 +62,55 @@ def dirichlet_prior(beta: torch.Tensor, alpha: torch.Tensor, args):
 
     return log_const + log_prior
 
-def unnorm_posterior_cond_likelihood(beta, cond=None, X=None, y=None, args=None):
-    if cond is None: cond = torch.zeros_like(beta[...,0]) if args.log_cond else torch.ones_like(beta[...,0])
-    sigmas = 10 ** cond if args.log_cond else cond
-    log_lik = gaussian_log_likelihood(beta=beta, sigma=sigmas, X=X, y=y)
-    alpha = torch.zeros_like(cond) if args.log_cond else torch.ones_like(cond)
-    log_prior = dirichlet_prior(beta=beta, alpha=alpha, args=args)
-    return log_lik + log_prior
+def dirichlet_prior_beta(beta: torch.Tensor, alphas: torch.Tensor):
+    log_const = torch.lgamma(alphas).sum(-1) - torch.lgamma(alphas.sum(-1))
+    log_prior = ((alphas - 1) * torch.log(beta)).sum(-1)
 
-def unnorm_posterior_fixed_sigma(beta, sigma, cond=None, X=None, y=None, args=None):
-    sigmas = torch.ones_like(beta[...,0]) * sigma
-    log_lik = gaussian_log_likelihood(beta=beta, sigma=sigmas, X=X, y=y)
-    alpha = torch.zeros_like(sigmas) if args.log_cond else torch.ones_like(sigmas)
-    log_prior = dirichlet_prior(beta=beta, alpha=alpha, args=args)
-    return log_lik + log_prior
+    return log_const + log_prior
 
 def multinomial_log_lik(X, beta):
     log_lik = (X * torch.log(beta)).sum(-1)
     log_const = torch.lgamma(X.sum()+1) - torch.lgamma(X+1).sum()
 
     return log_lik + log_const
-def unnorm_posterior_multinomial(beta, cond=None, X=None):
+def unnorm_posterior_multinomial(beta, alphas, cond=None, X=None):
     log_lik = multinomial_log_lik(beta=beta, X=X)
-    alpha = torch.zeros_like(beta[...,0]) if args.log_cond else torch.ones_like(beta[...,0])
-    log_prior = dirichlet_prior(beta=beta, alpha=alpha, args=args)
+    # alpha = torch.zeros_like(beta[...,0]) if args.log_cond else torch.ones_like(beta[...,0])
+    # log_prior = dirichlet_prior(beta=beta, alpha=alpha, args=args)
+    log_prior = dirichlet_prior_beta(beta=beta, alphas=alphas)
     return log_lik + log_prior
-
-def generate_regression_simplex (n, d, sigma=0.1, seed=1234):
-    np.random.seed(seed)
-    X_np = np.random.randn(n, d)
-    beta = np.random.rand(d)
-    beta /= beta.sum() # normalize the weights on the simplex
-    y_np = X_np @ beta + np.random.randn(n) * sigma
-
-    return X_np, y_np
 
 def generate_multinomial_simplex(n, d):
     probs = np.random.rand(d)
     probs /= probs.sum()
-    X = np.random.multinomial(n, probs)
+    X = np.random.multinomial(n, probs)  # RIGHT
 
     return X
 
-
-def plot_posterior_boxplot(samples_mcmc, samples_flow):
+def plot_posterior_boxplot(samples_gt, samples_mcmc, samples_flow=None):
     import seaborn as sns
 
-    assert samples_mcmc.shape == samples_flow.shape
+    assert samples_gt.shape == samples_mcmc.shape
+
+    df_list_gt = [pd.DataFrame(samples_gt[:, i], columns=["value"]).assign(coefficient=f"{i}") for i in
+                  range(samples_gt.shape[-1])]
+    gt_df = pd.concat(df_list_gt, ignore_index=True, sort=False)
+    gt_df["sampler"] = "gt"
 
     df_list_mcmc = [pd.DataFrame(samples_mcmc[:, i], columns=["value"]).assign(coefficient=f"{i}") for i in
                     range(samples_mcmc.shape[-1])]
     mcmc_df = pd.concat(df_list_mcmc, ignore_index=True, sort=False)
     mcmc_df["sampler"] = "mcmc"
 
-    df_list_flow = [pd.DataFrame(samples_flow[:, i], columns=["value"]).assign(coefficient=f"{i}") for i in
-                    range(samples_flow.shape[-1])]
-    flow_df = pd.concat(df_list_flow, ignore_index=True, sort=False)
-    flow_df["sampler"] = "flow"
+    if samples_flow is not None:
+        df_list_flow = [pd.DataFrame(samples_flow[:, i], columns=["value"]).assign(coefficient=f"{i}") for i in
+                        range(samples_flow.shape[-1])]
+        flow_df = pd.concat(df_list_flow, ignore_index=True, sort=False)
+        flow_df["sampler"] = "flow"
+        samples_df = pd.concat([mcmc_df, flow_df, gt_df], ignore_index=True, sort=False)
+    else:
+        samples_df = pd.concat([mcmc_df, gt_df], ignore_index=True, sort=False)
 
-    samples_df = pd.concat([mcmc_df, flow_df], ignore_index=True, sort=False)
     sns.boxplot(data=samples_df, x="coefficient", y="value", hue="sampler")
     plt.savefig("./mcmc_flow_boxplot.pdf", dpi=300)
     plt.show()
@@ -170,52 +152,43 @@ def mh_sampler(burnin=10000, chains=1000, iterations=20000, subsample=2000, dim=
     return samples
 
 def main():
-    just_load = False # False: train model and save samples. True: load the samples
     args.log_cond = True
     prior_name = "dirichlet"
     set_random_seeds(args.seed)
 
     # load data
-    sigma_true = 0.09
-    d = 10
-    n = 20
-    X_np, y_np = generate_regression_simplex(n=n, d=d, sigma=sigma_true)
-    X_tensor = torch.from_numpy(X_np).float().to(device=args.device)
-    y_tensor = torch.from_numpy(y_np).float().to(device=args.device)
-    args.datadim = X_tensor.shape[1]
+    d = 50
+    n = 10
+    alphas = 0.1 * torch.ones((1, d), device=args.device)
+    # alpha[:, -1:] = 1
 
-    log_unnorm_posterior = partial(unnorm_posterior_cond_likelihood, X=X_tensor, y=y_tensor, args=args)
-    log_unnorm_posterior_mh = partial(unnorm_posterior_fixed_sigma, sigma=sigma_true, X=X_tensor, y=y_tensor, args=args)
+    X_np = generate_multinomial_simplex(n=n, d=d)
+    X_tensor = torch.from_numpy(X_np).float().to(device=args.device)
+    args.datadim = X_tensor.shape[0]
+    gt_samples = np.random.dirichlet(alpha=X_np + alphas.detach().cpu().numpy().ravel(), size=1000)
+
+    log_unnorm_posterior = partial(unnorm_posterior_multinomial, X=X_tensor, alphas=alphas)#, flow_prior=flow_prior)
 
     mh_samples = mh_sampler(burnin=10000, chains=100, iterations=20000, subsample=2000, dim=args.datadim,
-                            log_p=log_unnorm_posterior_mh, dtype=torch.float32)
+                            log_p=log_unnorm_posterior, dtype=torch.float32)
     mh_samples = mh_samples.reshape(-1, args.datadim)
+    plot_posterior_boxplot(gt_samples[:,:10], mh_samples[:,:10])
 
-    plot_posterior_boxplot(mh_samples, samples[opt_idx])
+    # build model
+    flow = build_circular_cond_flow_l1_manifold(args)
 
-    if not just_load:
-        # build model
-        flow = build_circular_cond_flow_l1_manifold(args)
+    # train model
+    flow.train()
+    flow, loss, loss_T = train_regression_cond(flow, log_unnorm_posterior, args=args, manifold=False)
+    plot_loss(loss)
 
-        # train model
-        flow.train()
-        flow, loss, loss_T = train_regression_cond(flow, log_unnorm_posterior, args=args, manifold=False)
-        plot_loss(loss)
+    # evaluate model
+    flow.eval()
+    samples, cond, kl = generate_samples(flow, args, cond=True, log_unnorm_posterior=log_unnorm_posterior, manifold=False, context_size=1, sample_size=1000, n_iter=500)
+    plot_betas_lambda_fixed_norm(samples=samples, lambdas=cond, dim=X_np.shape[-1], conf=0.95, n_plots=1, log_scale=args.log_cond)
 
-        # evaluate model
-        flow.eval()
-        samples, cond, kl = generate_samples(flow, args, cond=True, log_unnorm_posterior=log_unnorm_posterior, manifold=False, context_size=1, sample_size=1000, n_iter=500)
-        plot_betas_lambda_fixed_norm(samples=samples, lambdas=cond, dim=X_np.shape[-1], conf=0.95, n_plots=1, log_scale=args.log_cond)
-
-        opt_cond, opt_idx = plot_marginal_likelihood(kl, cond, args)
-        plot_posterior_boxplot(mh_samples, samples[opt_idx])
-        print(f"Optimal sigma via MLL: {opt_cond:.3f} (true: {sigma_true:.3f})")
-        np.save(f'data_{prior_name}.npy', samples)
-    else:
-        samples_uniform = np.load('data_uniform.npy')  # load
-        samples_dirichlet = np.load('data_dirichlet.npy')  # load
-
-        plot_sparsity_distr(samples_uniform, samples_dirichlet, X_np, y_np, threshold=0.01, n_bins=25)
+    opt_cond, opt_idx = plot_marginal_likelihood(kl, cond, args)
+    plot_posterior_boxplot(samples_gt=gt_samples[:,:10], samples_mcmc=mh_samples[:,:10], samples_flow=samples[opt_idx,:,:10])
 
 
 if __name__ == "__main__":

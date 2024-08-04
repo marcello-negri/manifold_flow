@@ -158,6 +158,94 @@ class Uniform(Dataset):
         self.log_surface_area = log_const_1 + log_const_2 + log_const_3
 
 
+class UniformTorus(Dataset):
+    def __init__(self, args):
+        super().__init__(args)
+        assert args.R > args.r
+        self.r = args.r
+        self.R = args.R
+        self.compute_log_surface()
+
+    def sample(self, n_samples):
+
+        enough = False
+        samples = torch.tensor([], device=self.args.device)
+        while not enough:
+            u = torch.rand(n_samples, device=self.args.device)
+            v = torch.rand(n_samples, device=self.args.device)
+            w = torch.rand(n_samples, device=self.args.device)
+
+            theta = 2 * torch.pi * u
+            phi = 2 * torch.pi * v
+            threshold = (self.R + self.r * torch.cos(theta) / (self.R + self.r))
+            mask = (w < threshold)
+            theta = theta[mask]
+            phi = phi[mask]
+            x = (self.R + self.r * torch.cos(theta)) * torch.cos(phi)
+            y = (self.R + self.r * torch.cos(theta)) * torch.sin(phi)
+            z = self.r * torch.sin(theta)
+
+            new_samples = torch.cat((x.unsqueeze(1), y.unsqueeze(1), z.unsqueeze(1)), dim=1)
+            samples = torch.cat((samples, new_samples), dim=0)
+
+            if samples.shape[0] >= n_samples: enough = True
+
+        return samples[:n_samples]
+
+    def log_density(self, points):
+        logp = torch.ones(points.shape[0], device=self.args.device)
+        norm_const = - self.log_surface_area
+
+        return logp * norm_const
+
+    def compute_log_surface(self):
+        surface = (2 * torch.pi) ** 2 * self.R * self.r
+        self.log_surface_area = np.log(surface)
+
+class HyperSurface(Dataset):
+    def __init__(self, args):
+        super().__init__(args)
+
+    def hypersurface(self, points):
+        raise NotImplementedError
+
+    def sample(self, n_samples):
+        xy = 2 * torch.rand((n_samples, 2)) - 1
+        # xy = torch.randn((n_samples, 2))
+        z = self.hypersurface(xy)
+        samples = torch.cat((xy, z.unsqueeze(1)), dim=1)
+
+        return samples
+
+class HyperSurface1(HyperSurface):
+    def __init__(self, args):
+        super().__init__(args)
+
+    def hypersurface(self, points):
+        x = points[:,0]
+        y = points[:,1]
+        return - 0.5 * x**2 + 0.5 * y**3
+
+class HyperSurface2(HyperSurface):
+    def __init__(self, args):
+        super().__init__(args)
+
+    def hypersurface(self, points):
+        x = points[:,0]
+        y = points[:,1]
+        return x**2 + x * y + y**2 - 1
+
+class HyperSurface3(HyperSurface):
+    def __init__(self, args):
+        super().__init__(args)
+
+    def hypersurface(self, points):
+        x = points[:,0]
+        y = points[:,1]
+        return x**2 - y**2 - 0.5 * x
+
+
+
 class UniformCheckerboard(Uniform):
     def __init__(self, args):
         super().__init__(args)
@@ -199,7 +287,7 @@ class UniformCheckerboard(Uniform):
         if isinstance(rotated_points, np.ndarray):
             rotated_points = torch.from_numpy(rotated_points).float()
 
-        points_sph = cartesian_to_spherical_torch(rotated_points).detach().numpy()
+        points_sph = cartesian_to_spherical_torch(rotated_points).detach().cpu().numpy()
         mask = (points_sph[:, 1] // delta_theta + points_sph[:, 2] // delta_phi) % 2 == 0
 
         return mask
@@ -241,6 +329,14 @@ def create_dataset(args):
         dataset = Uniform(args)
     elif args.dataset == 'uniform_checkerboard':
         dataset = UniformCheckerboard(args)
+    elif args.dataset == 'uniform_torus':
+        dataset = UniformTorus(args)
+    elif args.dataset == "hypersurface1":
+        dataset = HyperSurface1(args)
+    elif args.dataset == "hypersurface2":
+        dataset = HyperSurface2(args)
+    elif args.dataset == "hypersurface3":
+        dataset = HyperSurface3(args)
     elif args.dataset == 'lp_uniform':
         dataset = LpUniform(args)
     elif args.dataset == 'vonmises_fisher_mixture':

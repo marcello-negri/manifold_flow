@@ -93,10 +93,6 @@ class Test(Markov_dirichlet):
         beta /= beta.sum()
         y_np = X_np @ beta + np.random.randn(n) * sigma
 
-        print(X_np)
-        print(beta)
-        print(y_np)
-
         return torch.tensor(X_np, device=self.device, dtype=self.dtype), torch.tensor(y_np, device=self.device, dtype=self.dtype)
 
     def gaussian_log_likelihood(self, beta: torch.Tensor, X: torch.Tensor, y: torch.Tensor):
@@ -110,6 +106,19 @@ class Test(Markov_dirichlet):
         p = self.gaussian_log_likelihood(x, self.x, self.y) + dirichlet_prior(x, self.alpha, self.struct)
         return p
 
+class Markov_dirichlet_given_logp(Markov_dirichlet):
+
+    def __init__(self, init_x, proposal_alphas, step_sizes, log_p, seed=1234):
+        super().__init__(init_x, proposal_alphas, step_sizes)
+        # self.prior_alpha = 1.0  # TODO adjust
+        # self.alpha = torch.tensor([self.prior_alpha], device=self.device, dtype=self.dtype)
+        # self.struct = Struct({'log_cond':False})
+        self.n = 20  # TODO adjust
+        self.log_p = log_p
+
+    def log_p(self, x):
+        p = self.log_p(x)#+ dirichlet_prior(x, self.alpha, self.struct)
+        return p
 
 # device = "cuda"
 # dtype = torch.float64

@@ -22,7 +22,7 @@ parser.add_argument('--seed', metavar='s', type=int, default=1234, help='random 
 parser.add_argument("--overwrite", action="store_true", help="re-train and overwrite flow model")
 parser.add_argument("--n_layers", metavar='nl', type=int, default=10, help='number of layers in the flow model')
 parser.add_argument("--n_hidden_features", metavar='nf', type=int, default=256, help='number of hidden features in the embedding space of the flow model')
-parser.add_argument("--logabs_jacobian", type=str, default="analytical_lu", choices=["analytical_sm", "cholesky", "analytical_lu"])
+parser.add_argument("--logabs_jacobian", type=str, default="analytical_lu", choices=["analytical", "cholesky", "analytical_lu"])
 parser.add_argument("--architecture", type=str, default="circular", choices=["circular", "ambient", "unbounded", "unbounded_circular"])
 parser.add_argument("--device", type=str, default="cuda", help='device for training the model')
 parser.add_argument("--learn_manifold", action="store_true", help="learn the manifold together with the density")
@@ -72,7 +72,6 @@ def main():
     set_random_seeds(args.seed)
     create_directories()
 
-
     # load dataset and samples
     dataset = create_dataset(args=args)
     train_data_np = dataset.load_samples(split="train", overwrite=True)
@@ -96,7 +95,7 @@ def main():
     # train flow
     if not os.path.isfile(args.model_name) or args.overwrite:
         if args.kl_div == "forward":
-            flow, loss = train_model_forward(model=flow, data=train_data, args=args, batch_size=10_000, early_stopping=False)
+            flow, loss = train_model_forward(model=flow, data=train_data, args=args, batch_size=1000, early_stopping=False)
         elif args.kl_div == "reverse":
             flow, loss = train_model_reverse(model=flow, dataset=dataset, train_data_np=train_data_np, args=args)
         plot_loss(loss)
@@ -111,9 +110,7 @@ def main():
 
     # evaluate learnt distribution
     samples_flow, log_probs_flow = generate_samples(flow, args=args, sample_size=100, n_iter=100)
-    n_samples = min(samples_flow.shape[0], train_data_np.shape[0])
-    plot_icosphere(data=train_data_np[:n_samples], dataset=dataset, flow=flow, samples_flow=samples_flow[:n_samples],
-                   rnf=None, samples_rnf=None, device='cuda', args=args, plot_rnf=False)
+    plot_icosphere(data=train_data_np, dataset=dataset, flow=flow, samples_flow=samples_flow, rnf=None, samples_rnf=None, device='cuda', args=args, plot_rnf=False)
     if args.dataset == "uniform":
         plot_pairwise_angle_distribution(samples_flow, n_samples=1000)
     plot_angle_distribution(samples_flow=samples_flow, samples_gt=train_data_np, device=args.device)

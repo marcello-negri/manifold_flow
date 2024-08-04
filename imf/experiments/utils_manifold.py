@@ -79,7 +79,7 @@ def train_model_forward(model, data, args, batch_size=1, context=None, alternati
     # optimizer = torch.optim.Adam([{'params':model.parameters()}, {'params':log_sigma, 'lr':1e-2}], lr=lr)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs)
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs)
     if early_stopping:
         idx = data.shape[0]//5
         val_data = data[:idx].requires_grad_(True)
@@ -96,11 +96,12 @@ def train_model_forward(model, data, args, batch_size=1, context=None, alternati
                 optimizer.zero_grad()
                 # add small noise to the dataset to prevent overfitting
                 # batch_data = batch_data + torch.randn(batch_data.shape, device=device) * 0.05
-                batch_data.requires_grad_(True)
+                #batch_data.requires_grad_(True)
                 # project data on the manifold
                 thetas, _ = model._transform._transforms[0].forward(batch_data, context=context)
                 # thetas, _ = model._transform._transforms[0].forward(batch_data, context=context)
                 data_manifold, _ = model._transform._transforms[0].inverse(thetas, context=context)
+
                 # data_manifold, _ = model._transform._transforms[0].inverse(thetas, context=context)
                 # breakpoint()
                 # compute log prob
@@ -109,12 +110,10 @@ def train_model_forward(model, data, args, batch_size=1, context=None, alternati
                 # data_manifold_, logabsdet_ = model._transform.inverse(data_base_, context)
                 # log_prob_ = log_prob_ - logabsdet_
                 log_prob = model.log_prob(data_manifold, context=context)
-
+                # breakpoint()
                 # q_samples, q_log_prob = model.sample_and_log_prob(num_samples=sample_size)
                 if torch.any(torch.isnan(log_prob)): breakpoint()
                 if torch.any(torch.isnan(data_manifold)): breakpoint()
-
-                # breakpoint()
 
                 beta = 100
                 if alternating:
@@ -128,6 +127,7 @@ def train_model_forward(model, data, args, batch_size=1, context=None, alternati
                 else:
                     mse_loss = torch.norm(data_manifold - batch_data, dim=1).mean()
                     log_likelihood = -torch.mean(log_prob)
+                    # total_loss = mse_loss
                     total_loss = log_likelihood + beta * mse_loss
                     # total_loss = beta * mse_loss
                     total_loss.backward()
@@ -169,6 +169,76 @@ def train_model_forward(model, data, args, batch_size=1, context=None, alternati
     f.close()
 
     return model, np.array(loss)
+
+def train_model_forward_(model, data, args, batch_size=1, context=None, alternating=False, early_stopping=False, device="cuda", **kwargs):
+    # optimizer = torch.optim.Adam([{'params':model.parameters()}, {'params':log_sigma, 'lr':1e-2}], lr=lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs)
+    if early_stopping:
+        idx = data.shape[0]//5
+        val_data = data[:idx].requires_grad_(True)
+        dataloader = torch.utils.data.DataLoader(data[idx:], batch_size=batch_size, shuffle=True)
+    else:
+        dataloader = torch.utils.data.DataLoader(data, batch_size=batch_size, shuffle=True)
+
+    loss = []
+    try:
+        start_time = time.monotonic()
+        model.train()
+        for epoch in range(args.epochs):
+            for i, batch_data in enumerate(dataloader):
+                optimizer.zero_grad()
+                # add small noise to the dataset to prevent overfitting
+                # batch_data = batch_data + torch.randn(batch_data.shape, device=device) * 0.05
+                #batch_data.requires_grad_(True)
+                # project data on the manifold
+                base_data, _ = model._transform.forward(batch_data, context=context)
+                # thetas, _ = model._transform._transforms[0].forward(batch_data, context=context)
+                manifold_data, _ = model._transform.inverse(base_data, context=context)
+                # data_manifold, _ = model._transform._transforms[0].inverse(thetas, context=context)
+                # breakpoint()
+                # compute log prob
+                # data_base_ = model.transform_to_noise(batch_data, context)
+                # log_prob_ = model._distribution.log_prob(data_base_, context)
+                # data_manifold_, logabsdet_ = model._transform.inverse(data_base_, context)
+                # log_prob_ = log_prob_ - logabsdet_
+                log_prob = model.log_prob(manifold_data, context=context)
+                # q_samples, q_log_prob = model.sample_and_log_prob(num_samples=sample_size)
+                if torch.any(torch.isnan(log_prob)): breakpoint()
+                if torch.any(torch.isnan(manifold_data)): breakpoint()
+
+                # breakpoint()
+
+                beta = 100
+                mse_loss = torch.norm(manifold_data - batch_data, dim=1).mean()
+                log_likelihood = -torch.mean(log_prob)
+                # total_loss = mse_loss
+                total_loss = log_likelihood + beta * mse_loss
+                # total_loss = beta * mse_loss
+                total_loss.backward()
+                optimizer.step()
+
+                log_lik_ = log_likelihood.cpu().detach().numpy()
+                mse_ = mse_loss.cpu().detach().numpy()
+                loss_ = total_loss.cpu().detach().numpy()
+                loss.append([loss_, log_lik_, mse_])
+                print(f"Train loss {epoch}: {loss_:.5f} (NLL: {log_lik_:.4f}, MSE: {mse_:.5f})")
+
+    except KeyboardInterrupt:
+        print("interrupted..")
+
+    end_time = time.monotonic()
+    time_diff = timedelta(seconds=end_time - start_time)
+    print(f"Training took {time_diff} seconds")
+
+    torch.save(model.state_dict(), args.model_name)
+    f = open(args.model_name+".txt", "w")
+    f.write(str(time_diff))
+    f.close()
+
+    return model, np.array(loss)
+
 
 def train_model_reverse(model, args, dataset, train_data_np, batch_size=100_000, context=None, **kwargs):
     from imf.experiments.plots import plot_angle_distribution, plot_samples_pca
@@ -347,7 +417,6 @@ def generate_samples(model, args, n_lambdas=0, cond=False, log_unnorm_posterior=
         return samples_list[cond_sorted_idx], cond_list[cond_sorted_idx], kl_list[cond_sorted_idx]
     else:
         return samples_list, log_probs_list
-
 
 def evaluate_flow_rnf(test_data, simulator, flow, rnf, device='cuda'):
     test_data_torch = torch.from_numpy(test_data).float().to(device)

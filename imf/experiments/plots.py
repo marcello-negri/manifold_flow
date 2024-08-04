@@ -91,10 +91,10 @@ def plot_icosphere(data, dataset, flow, samples_flow, rnf, samples_rnf, kde=Fals
             logp_rnf = partial(density_rnf, rnf=rnf, args=args)
             plot_logp(ax23, logp_function=logp_rnf, points_surface=points_surface_rnf, title="rnf")
 
-    plt.savefig(f"./experiments/plots/density_plot.pdf", dpi=300)
+    plt.savefig(f"./plots/density_plot_{(args.model_name).split('/')[-1]}.pdf", dpi=300)
     plt.show()
 
-def map_colors(p3dc, func, kde=False, cmap='viridis'):
+def map_colors(p3dc, func, kde=False, cmap='viridis', inpute_nans=True):
     """
     function taken from: https://stackoverflow.com/questions/63298864/plot-trisurface-with-custom-color-array
 
@@ -118,6 +118,12 @@ def map_colors(p3dc, func, kde=False, cmap='viridis'):
     # compute the function in the barycenter
     if kde: values = func(triangles.mean(axis=1).T)
     else: values = func(triangles.mean(axis=1))
+    if np.any(np.isnan(values)):
+        idx = np.isnan(values)
+        n_nans = idx.astype("int").sum()
+        print(f"WARNING: {n_nans} nans were found and imputed with average values")
+        avg = np.nanmean(values)
+        values[idx] = np.ones(n_nans) * avg
 
     # usual stuff
     norm = Normalize()#vmin=0, vmax=1)
@@ -349,7 +355,7 @@ def plot_samples_pca(samples_flow, samples_gt, filename=None):
 
 def load_mesh():
     # mesh = meshio.read("icosphere/icoSphereDetail.stl")
-    mesh = meshio.read("./experiments/icosphere/icosphere40.stl")
+    mesh = meshio.read("./icosphere/icosphere40.stl")
     mesh.points = mesh.points - mesh.points.mean(0) # center the sphere
 
     return mesh
