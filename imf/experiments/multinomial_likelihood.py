@@ -111,31 +111,47 @@ def plot_posterior_boxplot(samples_gt, samples_mcmc, samples_flow=None):
     else:
         samples_df = pd.concat([mcmc_df, gt_df], ignore_index=True, sort=False)
 
-    sns.boxplot(data=samples_df, x="coefficient", y="value", hue="sampler")
+    sns.boxplot(data=samples_df, x="coefficient", y="value", hue="sampler", showfliers=False)
     plt.savefig("./mcmc_flow_boxplot.pdf", dpi=300)
     plt.show()
 
 def mh_sampler(burnin=10000, chains=1000, iterations=20000, subsample=2000, dim=10, log_p=None, dtype = torch.float64, device="cuda"):
-    # alphas_proposal = [0.1,0.5,1]
-    alphas_proposal = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0]
-    # important to have 1.0 in the steps for successful sampling
-    # steps_proposal = [0.1,0.2,0.5,1.0]
-    steps_proposal = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0]
     init_alpha = torch.tensor([1.0], device=device, dtype=dtype)  # TODO adjust
 
     init = get_dirichlet_samples(init_alpha, chains, dim)[0]
-    alphas = torch.tensor(alphas_proposal, device=device, dtype=dtype)
-    steps_sizes = torch.tensor(steps_proposal, device=device, dtype=dtype)
     # test = Test(init, alphas, steps_sizes)
     from imf.experiments.dirichlet_sampler import Markov_dirichlet_given_logp
-    test = Markov_dirichlet_given_logp(init, alphas, steps_sizes, log_p=log_p)
+
+    if dim < 6:  # these values are rough guesstimates
+        steps = [0.05, 0.2, 1.0]
+        alphas = [0.1, 1.0]
+    elif dim < 15:
+        steps = [0.01, 0.1, 1.0]
+        alphas = [0.05, 1.0, 2.0]
+    elif dim < 60:
+        steps = [0.00001, 0.0001, 0.002, 0.05, 1.0]#, 0.02, 0.05, 1.0]
+        alphas = [0.5, 1.0, 1.5]
+    else:
+        steps = [0.001, 0.01, 1.0]
+        alphas = [0.1, 1.0]
+    t_0 = 4
+    centered_props = False
+    steps_0 = [0.05, 0.2, 1.0] #[min(np.sqrt(t_0) * step, 1.0) for step in steps]
+    print("steps ", steps)
+    print("steps_0 ", steps_0)
+    print("alphas ", alphas)
+    print("proposals centered: ", centered_props)
+    alphas = torch.tensor(alphas, device=device, dtype=dtype)
+    steps = torch.tensor(steps, device=device, dtype=dtype)
+    steps_0 = torch.tensor(steps_0, device=device, dtype=dtype)
+    test = Markov_dirichlet_given_logp(init, alphas, steps, log_p=log_p, centered_props=centered_props, T_0=t_0, step_sizes_0=steps_0, temp_its_0=0.5 * burnin, temp_its=burnin * 0.8)
 
     it = test.iterator()
     startt = os.times()
     for i in range(burnin):
         next(it)
         if i % 500 == 0:
-            print("burnin", i)
+            print(f"burnin {i} accrate {test.accrate} curA {test.get_a()} temp {test.get_temp()}")
 
     # here all the samples are stored on the cpu
     samples = torch.zeros((iterations // subsample, chains, dim), dtype=dtype)
@@ -145,9 +161,10 @@ def mh_sampler(burnin=10000, chains=1000, iterations=20000, subsample=2000, dim=
         else:
             next(it)
         if i % 500 == 0:
-            print("iteration ", i)
+            print(f"iteration {i} accrate {test.accrate} curA {test.get_a()} temp {test.get_temp()}")
     endt = os.times()
     dt = endt.user + endt.system - startt.user - startt.system
+    print(f"total used time {dt} for sampling")
 
     return samples
 
@@ -156,40 +173,71 @@ def main():
     prior_name = "dirichlet"
     set_random_seeds(args.seed)
 
-    # load data
+    # dimensions
     d = 50
-    n = 10
+    # gt setting
+    n = 30
     alphas = 0.1 * torch.ones((1, d), device=args.device)
-    # alpha[:, -1:] = 1
+    num_gt_samples = 1000
+    # mcmc setting
+    chains = 2000
+    burnin = 20000
+    iterations = 10000
+    subsample = 2000
+    # flow setting
+    args.epochs = 2000
+    args.n_context_samples = 500
+    sample_size = 500
+    n_iter = 100
 
     X_np = generate_multinomial_simplex(n=n, d=d)
     X_tensor = torch.from_numpy(X_np).float().to(device=args.device)
     args.datadim = X_tensor.shape[0]
-    gt_samples = np.random.dirichlet(alpha=X_np + alphas.detach().cpu().numpy().ravel(), size=1000)
+    gt_samples = np.random.dirichlet(alpha=X_np + alphas.detach().cpu().numpy().ravel(), size=num_gt_samples)
+    dim_sort = np.argsort(gt_samples.mean(0))  # ascending
+    dim_sort = dim_sort[::-1].copy()  # descending
 
     log_unnorm_posterior = partial(unnorm_posterior_multinomial, X=X_tensor, alphas=alphas)#, flow_prior=flow_prior)
 
-    mh_samples = mh_sampler(burnin=10000, chains=100, iterations=20000, subsample=2000, dim=args.datadim,
-                            log_p=log_unnorm_posterior, dtype=torch.float32)
-    mh_samples = mh_samples.reshape(-1, args.datadim)
-    plot_posterior_boxplot(gt_samples[:,:10], mh_samples[:,:10])
+    import time
+    #time.sleep(1)
+    mh_samples = mh_sampler(burnin=burnin, chains=chains, iterations=iterations, subsample=subsample, dim=args.datadim,
+                            log_p=log_unnorm_posterior, dtype=torch.float64)
+    mh_samples = mh_samples.reshape(-1, args.datadim).to(dtype=torch.float32)
+    plot_posterior_boxplot(gt_samples[:,dim_sort], mh_samples[:num_gt_samples,dim_sort])
+
+    print("sleep")
+    time.sleep(10000)
 
     # build model
     flow = build_circular_cond_flow_l1_manifold(args)
 
     # train model
     flow.train()
+    startt = os.times()
     flow, loss, loss_T = train_regression_cond(flow, log_unnorm_posterior, args=args, manifold=False)
+    endt = os.times()
+    dt = endt.user + endt.system - startt.user - startt.system
+    print(f"total used time {dt} for flow training")
     plot_loss(loss)
 
     # evaluate model
     flow.eval()
-    samples, cond, kl = generate_samples(flow, args, cond=True, log_unnorm_posterior=log_unnorm_posterior, manifold=False, context_size=1, sample_size=1000, n_iter=500)
+    samples, cond, kl = generate_samples(flow, args, cond=True, log_unnorm_posterior=log_unnorm_posterior, manifold=False, context_size=1, sample_size=sample_size, n_iter=n_iter)
     plot_betas_lambda_fixed_norm(samples=samples, lambdas=cond, dim=X_np.shape[-1], conf=0.95, n_plots=1, log_scale=args.log_cond)
 
-    opt_cond, opt_idx = plot_marginal_likelihood(kl, cond, args)
-    plot_posterior_boxplot(samples_gt=gt_samples[:,:10], samples_mcmc=mh_samples[:,:10], samples_flow=samples[opt_idx,:,:10])
+    # shuffles samples
+    shuff_mh = torch.randperm(mh_samples.shape[0])
+    mh_samples = mh_samples[shuff_mh].detach().cpu().numpy()
+    samples = samples.reshape(-1, d)
+    np.random.shuffle(samples)
+
+    plot_posterior_boxplot(samples_gt=gt_samples[:,dim_sort], samples_mcmc=mh_samples[:num_gt_samples,dim_sort], samples_flow=samples[:num_gt_samples,dim_sort])
 
 
 if __name__ == "__main__":
     main()
+
+
+
+

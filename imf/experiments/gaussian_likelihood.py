@@ -133,7 +133,7 @@ def plot_posterior_boxplot(samples_mcmc, samples_flow):
     plt.savefig("./mcmc_flow_boxplot.pdf", dpi=300)
     plt.show()
 
-def mh_sampler(burnin=10000, chains=1000, iterations=20000, subsample=2000, dim=10, alphas_proposal=[0.1, 0.5, 1.0], steps_proposal=[0.1,0.2,0.5,1.0], dtype = torch.float64, device="cuda"):
+def mh_sampler(burnin=10000, chains=1000, iterations=20000, subsample=2000, dim=10, alphas_proposal=[0.1, 0.5, 1.0], steps_proposal=[0.1,0.2,0.5,1.0], log_p=None, dtype = torch.float64, device="cuda"):
     init_alpha = torch.tensor([1.0], device=device, dtype=dtype)  # TODO adjust
 
     init = get_dirichlet_samples(init_alpha, chains, dim)[0]
@@ -174,7 +174,10 @@ def main():
     # load data
     sigma_true = 0.09
     dim = 50
-    X_np, y_np = generate_regression_simplex(n=20, d=dim, sigma=sigma_true)
+    chains = 1000
+    n = 20
+    iterations = 20000
+    X_np, y_np = generate_regression_simplex(n=n, d=dim, sigma=sigma_true)
     X_tensor = torch.from_numpy(X_np).float().to(device=args.device)
     y_tensor = torch.from_numpy(y_np).float().to(device=args.device)
     args.datadim = X_tensor.shape[1]
@@ -194,10 +197,9 @@ def main():
     else:
         steps = [0.00001, 0.001, 0.1, 1.0]
         alphas = [0.1, 1.0]
-    mh_samples = mh_sampler(burnin=10000, chains=10000, iterations=20000, subsample=1000, steps_proposal=steps, alphas_proposal=alphas, dim=args.datadim)
+    mh_samples = mh_sampler(burnin=10000, chains=chains, iterations=iterations, subsample=2000, steps_proposal=steps,
+                            alphas_proposal=alphas, dim=args.datadim, log_p=log_unnorm_posterior_mh, dtype=torch.float32)
     mh_samples = mh_samples.reshape(-1, args.datadim)
-
-    #plot_posterior_boxplot(mh_samples, samples[opt_idx])
 
     if not just_load:
         # build model
@@ -228,3 +230,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+

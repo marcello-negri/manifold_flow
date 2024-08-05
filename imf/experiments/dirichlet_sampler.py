@@ -11,43 +11,60 @@ from abc import ABC, abstractmethod
 
 
 class Markov_dirichlet(ABC):
-    def __init__(self, init_x, proposal_alphas, step_sizes):
+    def __init__(self, init_x, proposal_alphas, step_sizes, centered_props=True, T_0=1, step_sizes_0=None, temp_its_0=2500, temp_its=5000):
         self.accrate = 0.0
-        self.accrate_gamma = 0.98
+        self.accrate_gamma = 0.9
         self.cur = init_x  # (b, n)
         self.device = init_x.device
         self.dtype = init_x.dtype
         self.curp = None
         self.chains = init_x.shape[0]
         self.dim = init_x.shape[1]
-        grid_alpha, grid_steps = torch.meshgrid(proposal_alphas, step_sizes, indexing='ij')
+        grid_alpha, _ = torch.meshgrid(proposal_alphas, step_sizes, indexing='ij')
         self.alphas = proposal_alphas
         self.step_sizes = step_sizes
+        self.centered_props = centered_props
         self.grid_alpha = grid_alpha
-        self.grid_steps = grid_steps
+        self.T_0 = T_0
+        self.log_T_0 = np.log(T_0)
+        self.step_sizes_0 = step_sizes_0
+        self.its = 0
+        self.temp_its = temp_its
+        self.temp_its_0 = temp_its_0
         self.minf = torch.tensor(float('-inf'), device=self.device, dtype=self.dtype)
-        #self.average = torch.ones((self.dim,), device=self.device, dtype=self.dtype) / self.dim
+        self.average = torch.ones((self.dim,), device=self.device, dtype=self.dtype) / self.dim
 
     def propose(self):
         proposed_grid = get_dirichlet_samples(self.alphas, self.chains, self.dim)
-        step_indices = torch.randint(0, self.step_sizes.shape[0], (self.chains,), device=self.device)
-        step = self.step_sizes[step_indices]
+        steps = self.step_sizes_0 if self.its < self.temp_its_0 and self.step_sizes_0 is not None else self.step_sizes
+        step_indices = torch.randint(0, steps.shape[0], (self.chains,), device=self.device)
+        step = steps[step_indices]
         alpha_indices = torch.randint(0, self.alphas.shape[0], (self.chains,), device=self.device)
         proposed = proposed_grid[alpha_indices, torch.arange(self.chains)]
-        proposed_scaled = self.cur + step[:,None] * (proposed - self.cur)
+        cur = self.pad_border(self.cur, step) if self.centered_props else self.cur
+        proposed_scaled = cur + step[:,None] * (proposed - cur)
         return proposed_scaled
 
     def eps_border(self, x, eps=1e-13):
         return torch.clamp(x, min=0.0+eps, max=1.0-eps)
 
+    def pad_border(self, x, steps):
+        mask = torch.logical_or(torch.any(x < steps, dim=-1), torch.any(x > 1.0-steps, dim=-1))
+        diff = x - self.average
+        scaled_x = x + diff / None # TODO some norming of diff
+        padded_x = torch.where(mask, scaled_x, x)
+        return padded_x  # TODO careful about steps == 1
+
     def transition(self, tox, fromx):
         tox = self.eps_border(tox)
         fromx = self.eps_border(fromx)
-        real_prop = fromx + (tox - fromx) / self.step_sizes[:,None,None]
+        steps = self.step_sizes_0 if self.its < self.temp_its_0 and self.step_sizes_0 is not None else self.step_sizes
+        fromx = self.pad_border(fromx, steps) if self.centered_props else fromx
+        real_prop = fromx + (tox - fromx) / steps[:, None, None]  # TODO need to check the dimensions of fromx and steps in the padded case
         mask = torch.logical_and(torch.all(real_prop < 1.0, dim=-1), torch.all(real_prop > 0.0, dim=-1))
-        adjust_prop = torch.where(mask[...,None], real_prop, fromx)
+        adjust_prop = torch.where(mask[..., None], real_prop, fromx)
         logps_unnorm = get_logp_dirichlet(alpha=self.grid_alpha, x=adjust_prop)[0]
-        logps = logps_unnorm - self.dim * torch.log(self.step_sizes[...,None])
+        logps = logps_unnorm - self.dim * torch.log(steps[..., None])
         masked_logps = torch.where(mask, logps, self.minf)
         return torch.logsumexp(masked_logps, dim=0)
 
@@ -55,12 +72,24 @@ class Markov_dirichlet(ABC):
     def log_p(self, x):
         pass
 
+    def get_a(self):
+        its = max(self.its - self.temp_its_0, 0)
+        max_its = self.temp_its - self.temp_its_0
+        return max(1 - its / max_its, 0)
+
+    def get_temp(self):
+        if self.its < self.temp_its:
+            a = self.get_a()
+            return np.exp(a * self.log_T_0)
+        return 1
+
     def accept(self, proposed):
         if self.curp is None:
             self.curp = self.log_p(self.cur)
+        temp = self.get_temp()
         prop = self.log_p(proposed)
-        t = self.transition(proposed, self.cur) - self.transition(self.cur, proposed)
-        a = prop - self.curp - t
+        t = self.transition(proposed, self.cur) - self.transition(self.cur, proposed) if self.its > self.temp_its_0 else 0.0
+        a = (prop - self.curp) / temp - t
         mask = torch.logical_or(a > 0.0, torch.rand(a.shape, device=self.device, dtype=self.dtype) < torch.exp(a))
         self.accrate = self.accrate_gamma * self.accrate + (1-self.accrate_gamma) * mask.to(dtype=torch.int32).sum() / mask.numel()
         self.cur = torch.where(mask[...,None], proposed, self.cur)
@@ -70,6 +99,7 @@ class Markov_dirichlet(ABC):
         while True:
             yield self.cur, self.curp
             self.accept(self.propose())
+            self.its = self.its + 1
 
 
 
@@ -80,8 +110,8 @@ from dirichlet_utils import Struct
 
 class Test(Markov_dirichlet):
 
-    def __init__(self, init_x, proposal_alphas, step_sizes, seed=1234):
-        super().__init__(init_x, proposal_alphas, step_sizes)
+    def __init__(self, init_x, proposal_alphas, step_sizes, centered_props=True, T_0=1, step_sizes_0=None, temp_its_0=2500, temp_its=5000, seed=1234):
+        super().__init__(init_x, proposal_alphas, step_sizes, centered_props, T_0, step_sizes_0, temp_its_0, temp_its)
         self.prior_alpha = 1.0  # TODO adjust
         self.alpha = torch.tensor([self.prior_alpha], device=self.device, dtype=self.dtype)
         self.struct = Struct({'log_cond':False})
@@ -112,12 +142,8 @@ class Test(Markov_dirichlet):
 
 class Markov_dirichlet_given_logp(Markov_dirichlet):
 
-    def __init__(self, init_x, proposal_alphas, step_sizes, log_p, seed=1234):
-        super().__init__(init_x, proposal_alphas, step_sizes)
-        # self.prior_alpha = 1.0  # TODO adjust
-        # self.alpha = torch.tensor([self.prior_alpha], device=self.device, dtype=self.dtype)
-        # self.struct = Struct({'log_cond':False})
-        self.n = 20  # TODO adjust
+    def __init__(self, init_x, proposal_alphas, step_sizes, log_p, centered_props=True, T_0=1, step_sizes_0=None, temp_its_0=2500, temp_its=5000, seed=1234):
+        super().__init__(init_x, proposal_alphas, step_sizes, centered_props, T_0, step_sizes_0, temp_its_0, temp_its)
         self.log_p = log_p
 
     def log_p(self, x):
