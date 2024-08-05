@@ -133,12 +133,7 @@ def plot_posterior_boxplot(samples_mcmc, samples_flow):
     plt.savefig("./mcmc_flow_boxplot.pdf", dpi=300)
     plt.show()
 
-def mh_sampler(burnin=10000, chains=1000, iterations=20000, subsample=2000, dim=10, log_p=None, dtype = torch.float64, device="cuda"):
-    # alphas_proposal = [0.1,0.5,1]
-    alphas_proposal = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0]
-    # important to have 1.0 in the steps for successful sampling
-    # steps_proposal = [0.1,0.2,0.5,1.0]
-    steps_proposal = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0]
+def mh_sampler(burnin=10000, chains=1000, iterations=20000, subsample=2000, dim=10, alphas_proposal=[0.1, 0.5, 1.0], steps_proposal=[0.1,0.2,0.5,1.0], dtype = torch.float64, device="cuda"):
     init_alpha = torch.tensor([1.0], device=device, dtype=dtype)  # TODO adjust
 
     init = get_dirichlet_samples(init_alpha, chains, dim)[0]
@@ -153,7 +148,7 @@ def mh_sampler(burnin=10000, chains=1000, iterations=20000, subsample=2000, dim=
     for i in range(burnin):
         next(it)
         if i % 500 == 0:
-            print("burnin", i)
+            print(f"burnin {i} accrate {test.accrate}")
 
     # here all the samples are stored on the cpu
     samples = torch.zeros((iterations // subsample, chains, dim), dtype=dtype)
@@ -163,9 +158,10 @@ def mh_sampler(burnin=10000, chains=1000, iterations=20000, subsample=2000, dim=
         else:
             next(it)
         if i % 500 == 0:
-            print("iteration ", i)
+            print(f"iteration {i} accrate {test.accrate}")
     endt = os.times()
     dt = endt.user + endt.system - startt.user - startt.system
+    print(f"total used time {dt} for sampling")
 
     return samples
 
@@ -177,9 +173,8 @@ def main():
 
     # load data
     sigma_true = 0.09
-    d = 10
-    n = 20
-    X_np, y_np = generate_regression_simplex(n=n, d=d, sigma=sigma_true)
+    dim = 50
+    X_np, y_np = generate_regression_simplex(n=20, d=dim, sigma=sigma_true)
     X_tensor = torch.from_numpy(X_np).float().to(device=args.device)
     y_tensor = torch.from_numpy(y_np).float().to(device=args.device)
     args.datadim = X_tensor.shape[1]
@@ -187,11 +182,22 @@ def main():
     log_unnorm_posterior = partial(unnorm_posterior_cond_likelihood, X=X_tensor, y=y_tensor, args=args)
     log_unnorm_posterior_mh = partial(unnorm_posterior_fixed_sigma, sigma=sigma_true, X=X_tensor, y=y_tensor, args=args)
 
-    mh_samples = mh_sampler(burnin=10000, chains=100, iterations=20000, subsample=2000, dim=args.datadim,
-                            log_p=log_unnorm_posterior_mh, dtype=torch.float32)
+    if dim < 6:  # these values are rough guesstimates
+        steps = [0.05, 0.2, 1.0]
+        alphas = [0.1, 1.0]
+    elif dim < 15:
+        steps = [0.01, 0.05, 0.2, 1.0]
+        alphas = [0.1, 1.0]
+    elif dim < 60:
+        steps = [0.0001, 0.003, 0.1, 1.0]
+        alphas = [0.1, 1.0]
+    else:
+        steps = [0.00001, 0.001, 0.1, 1.0]
+        alphas = [0.1, 1.0]
+    mh_samples = mh_sampler(burnin=10000, chains=10000, iterations=20000, subsample=1000, steps_proposal=steps, alphas_proposal=alphas, dim=args.datadim)
     mh_samples = mh_samples.reshape(-1, args.datadim)
 
-    plot_posterior_boxplot(mh_samples, samples[opt_idx])
+    #plot_posterior_boxplot(mh_samples, samples[opt_idx])
 
     if not just_load:
         # build model
@@ -208,7 +214,9 @@ def main():
         plot_betas_lambda_fixed_norm(samples=samples, lambdas=cond, dim=X_np.shape[-1], conf=0.95, n_plots=1, log_scale=args.log_cond)
 
         opt_cond, opt_idx = plot_marginal_likelihood(kl, cond, args)
-        plot_posterior_boxplot(mh_samples, samples[opt_idx])
+        rand_shuffle = torch.randperm(mh_samples.shape[0])
+        mh_samples_shuffled = mh_samples[rand_shuffle]
+        plot_posterior_boxplot(mh_samples_shuffled[:samples.shape[1]], samples[opt_idx])
         print(f"Optimal sigma via MLL: {opt_cond:.3f} (true: {sigma_true:.3f})")
         np.save(f'data_{prior_name}.npy', samples)
     else:

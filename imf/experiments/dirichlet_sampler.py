@@ -12,6 +12,8 @@ from abc import ABC, abstractmethod
 
 class Markov_dirichlet(ABC):
     def __init__(self, init_x, proposal_alphas, step_sizes):
+        self.accrate = 0.0
+        self.accrate_gamma = 0.98
         self.cur = init_x  # (b, n)
         self.device = init_x.device
         self.dtype = init_x.dtype
@@ -23,7 +25,8 @@ class Markov_dirichlet(ABC):
         self.step_sizes = step_sizes
         self.grid_alpha = grid_alpha
         self.grid_steps = grid_steps
-        self.average = torch.ones((self.dim,), device=self.device, dtype=self.dtype) / self.dim
+        self.minf = torch.tensor(float('-inf'), device=self.device, dtype=self.dtype)
+        #self.average = torch.ones((self.dim,), device=self.device, dtype=self.dtype) / self.dim
 
     def propose(self):
         proposed_grid = get_dirichlet_samples(self.alphas, self.chains, self.dim)
@@ -42,11 +45,11 @@ class Markov_dirichlet(ABC):
         fromx = self.eps_border(fromx)
         real_prop = fromx + (tox - fromx) / self.step_sizes[:,None,None]
         mask = torch.logical_and(torch.all(real_prop < 1.0, dim=-1), torch.all(real_prop > 0.0, dim=-1))
-        adjust_prop = torch.where(mask[...,None], real_prop, self.average)
-        logps_unnorm = get_logp_dirichlet(alpha=self.grid_alpha, x=adjust_prop)
-        logps = logps_unnorm - self.dim * torch.log(self.step_sizes[None,...,None])
-        exp = torch.where(mask, torch.exp(logps), 0.0)
-        return torch.log(exp.sum((0,1)))
+        adjust_prop = torch.where(mask[...,None], real_prop, fromx)
+        logps_unnorm = get_logp_dirichlet(alpha=self.grid_alpha, x=adjust_prop)[0]
+        logps = logps_unnorm - self.dim * torch.log(self.step_sizes[...,None])
+        masked_logps = torch.where(mask, logps, self.minf)
+        return torch.logsumexp(masked_logps, dim=0)
 
     @abstractmethod
     def log_p(self, x):
@@ -59,6 +62,7 @@ class Markov_dirichlet(ABC):
         t = self.transition(proposed, self.cur) - self.transition(self.cur, proposed)
         a = prop - self.curp - t
         mask = torch.logical_or(a > 0.0, torch.rand(a.shape, device=self.device, dtype=self.dtype) < torch.exp(a))
+        self.accrate = self.accrate_gamma * self.accrate + (1-self.accrate_gamma) * mask.to(dtype=torch.int32).sum() / mask.numel()
         self.cur = torch.where(mask[...,None], proposed, self.cur)
         self.curp = torch.where(mask, prop, self.curp)
 

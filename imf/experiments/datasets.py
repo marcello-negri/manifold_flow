@@ -2,7 +2,6 @@ import os
 import torch
 import numpy as np
 import scipy as sp
-import rpy2.robjects as robjects
 
 from imf.experiments.utils_manifold import cartesian_to_spherical_torch
 from imf.experiments.vonmises_fisher import vMF, MixvMF
