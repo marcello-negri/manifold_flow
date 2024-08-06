@@ -135,13 +135,13 @@ def mh_sampler(burnin=10000, chains=1000, iterations=20000, subsample=2000, dim=
 
     if dim < 10:  # these values are rough guesstimates
         steps = [1e-1, 1.0]
-        alphas = [0.2, 1.5]
+        alphas = [1.0]
     elif dim < 25:
         steps = [5e-2, 1.0]#, 0.001, 1.0]
-        alphas = [0.2, 1.5]
+        alphas = [1.0]
     elif dim < 60:
         steps = [1e-4, 1.0]#, 0.02, 0.05, 1.0]
-        alphas = [0.2, 1.5]
+        alphas = [1.0]
     t_0 = 1
     centered_props = False
     steps_0 = [1e-1] #[min(np.sqrt(t_0) * step, 1.0) for step in steps]#[0.05, 0.2, 1.0] #[min(np.sqrt(t_0) * step, 1.0) for step in steps]
@@ -158,7 +158,7 @@ def mh_sampler(burnin=10000, chains=1000, iterations=20000, subsample=2000, dim=
     startt = os.times()
     for i in range(burnin):
         next(it)
-        if i % 500 == 0:
+        if i % 1000 == 0:
             print(f"burnin {i} accrate {test.accrate} curA {test.get_a()} temp {test.get_temp()}")
 
     # here all the samples are stored on the cpu
@@ -168,7 +168,7 @@ def mh_sampler(burnin=10000, chains=1000, iterations=20000, subsample=2000, dim=
             samples[i//subsample] = next(it)[0].detach().cpu()
         else:
             next(it)
-        if i % 500 == 0:
+        if i % 1000 == 0:
             print(f"iteration {i} accrate {test.accrate} curA {test.get_a()} temp {test.get_temp()}")
     endt = os.times()
     dt = endt.user + endt.system - startt.user - startt.system
@@ -182,25 +182,25 @@ def main():
     set_random_seeds(args.seed)
 
     # dimensions
-    d = 6
+    d = 15
     # gt setting
-    n = 8
-    alphas = 0.5 * torch.ones((1, d), device=args.device)
+    n = 9
+    alphas = 0.3 * torch.ones((1, d), device=args.device)
     num_gt_samples = 1000
     target_multinomial = True
     # mcmc setting
-    chains = 1000
-    burnin = 10000
-    iterations = 10000
-    subsample = 5000
+    chains = 2000
+    burnin = 50000
+    iterations = 100
+    subsample = 100
     # flow setting
     args.epochs = 2000
     args.n_context_samples = 500
     sample_size = 500
     n_iter = 100
     # viz settings:
-    idx = [0,1,2,4,d-1]
-    jumps = [3,4]
+    idx = [0,1,2,4,9,d-1]
+    jumps = [3,4,5]
 
     X_np = generate_multinomial_simplex(n=n, d=d)
     X_tensor = torch.from_numpy(X_np).float().to(device=args.device)
@@ -217,7 +217,7 @@ def main():
         gt_samples = get_dirichlet_samples(alphas[0,0], num_gt_samples, d).detach().cpu().numpy()
         #gt_samples = np.random.dirichlet(alphas.detach().cpu().numpy().ravel(), size=num_gt_samples)
 
-    import time
+    #import time
     #time.sleep(1)
     with torch.no_grad():
         mh_samples = mh_sampler(burnin=burnin, chains=chains, iterations=iterations, subsample=subsample, dim=args.datadim,
@@ -225,8 +225,8 @@ def main():
     mh_samples = mh_samples.reshape(-1, args.datadim).to(dtype=torch.float32)
     plot_posterior_boxplot(gt_samples[:,dim_sort], mh_samples[:num_gt_samples,dim_sort], idx=idx, jumps=jumps)
 
-    print("sleep")
-    time.sleep(10000)
+    #print("sleep")
+    #time.sleep(10000)
 
     # build model
     flow = build_circular_cond_flow_l1_manifold(args)
