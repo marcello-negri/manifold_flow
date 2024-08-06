@@ -25,6 +25,11 @@ class Markov_dirichlet(ABC):
         self.step_sizes = step_sizes
         self.centered_props = centered_props
         self.grid_alpha = grid_alpha
+        if step_sizes_0 is not None:
+            grid_alpha, _ = torch.meshgrid(proposal_alphas, step_sizes_0, indexing='ij')
+            self.grid_alpha_0 = grid_alpha
+        else:
+            self.grid_alpha_0 = self.grid_alpha
         self.T_0 = T_0
         self.log_T_0 = np.log(T_0)
         self.step_sizes_0 = step_sizes_0
@@ -41,29 +46,33 @@ class Markov_dirichlet(ABC):
         step = steps[step_indices]
         alpha_indices = torch.randint(0, self.alphas.shape[0], (self.chains,), device=self.device)
         proposed = proposed_grid[alpha_indices, torch.arange(self.chains)]
-        cur = self.pad_border(self.cur, step) if self.centered_props else self.cur
-        proposed_scaled = cur + step[:,None] * (proposed - cur)
+        cur = self.pad_border(self.cur, step[None])[0] if self.centered_props else self.cur
+        proposed_scaled = cur + step[:,None] * (proposed - (self.average if self.centered_props else cur))
         return proposed_scaled
 
     def eps_border(self, x, eps=1e-13):
         return torch.clamp(x, min=0.0+eps, max=1.0-eps)
 
     def pad_border(self, x, steps):
-        mask = torch.logical_or(torch.any(x < steps, dim=-1), torch.any(x > 1.0-steps, dim=-1))
-        diff = x - self.average
-        scaled_x = x + diff / None # TODO some norming of diff
-        padded_x = torch.where(mask, scaled_x, x)
-        return padded_x  # TODO careful about steps == 1
+        pad = steps/self.dim
+        min_id = x.argmin(-1)  # minimal value needs to be walked back to pad towards average
+        to_avg = self.average - x
+        arange = torch.arange(x.shape[0])
+        factor = (pad - x[arange, min_id]) / to_avg[arange, min_id] #(pad - x[arange, min_id]) / to_avg[arange, min_id]
+        scaled_x = x[None] + to_avg[None] * factor[...,None]
+        mask = torch.any(x[None] < pad[...,None], dim=-1)  # just checking the lower bounds -> automatically fixes the high bounds
+        padded_x = torch.where(mask[...,None], scaled_x, x)
+        return padded_x
 
     def transition(self, tox, fromx):
         tox = self.eps_border(tox)
         fromx = self.eps_border(fromx)
         steps = self.step_sizes_0 if self.its < self.temp_its_0 and self.step_sizes_0 is not None else self.step_sizes
-        fromx = self.pad_border(fromx, steps) if self.centered_props else fromx
-        real_prop = fromx + (tox - fromx) / steps[:, None, None]  # TODO need to check the dimensions of fromx and steps in the padded case
+        fromx = self.pad_border(fromx, steps[...,None]) if self.centered_props else fromx
+        real_prop = (self.average if self.centered_props else fromx) + (tox - fromx) / steps[:, None, None]
         mask = torch.logical_and(torch.all(real_prop < 1.0, dim=-1), torch.all(real_prop > 0.0, dim=-1))
         adjust_prop = torch.where(mask[..., None], real_prop, fromx)
-        logps_unnorm = get_logp_dirichlet(alpha=self.grid_alpha, x=adjust_prop)[0]
+        logps_unnorm = get_logp_dirichlet(alpha=self.grid_alpha_0 if self.its < self.temp_its_0 else self.grid_alpha, x=adjust_prop)[0]
         logps = logps_unnorm - self.dim * torch.log(steps[..., None])
         masked_logps = torch.where(mask, logps, self.minf)
         return torch.logsumexp(masked_logps, dim=0)
@@ -87,7 +96,7 @@ class Markov_dirichlet(ABC):
         if self.curp is None:
             self.curp = self.log_p(self.cur)
         temp = self.get_temp()
-        prop = self.log_p(proposed)
+        prop = self.log_p(self.eps_border(proposed))
         t = self.transition(proposed, self.cur) - self.transition(self.cur, proposed) if self.its > self.temp_its_0 else 0.0
         a = (prop - self.curp) / temp - t
         mask = torch.logical_or(a > 0.0, torch.rand(a.shape, device=self.device, dtype=self.dtype) < torch.exp(a))

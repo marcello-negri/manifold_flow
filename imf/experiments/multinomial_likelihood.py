@@ -87,23 +87,29 @@ def generate_multinomial_simplex(n, d):
 
     return X
 
-def plot_posterior_boxplot(samples_gt, samples_mcmc, samples_flow=None):
+def plot_posterior_boxplot(samples_gt, samples_mcmc, samples_flow=None, idx=None, jumps=None):
     import seaborn as sns
 
     assert samples_gt.shape == samples_mcmc.shape
 
-    df_list_gt = [pd.DataFrame(samples_gt[:, i], columns=["value"]).assign(coefficient=f"{i}") for i in
+    if idx is not None:
+        samples_gt = samples_gt[:, idx]
+        samples_mcmc = samples_mcmc[:, idx]
+        if samples_flow is not None:
+            samples_flow = samples_flow[:, idx]
+
+    df_list_gt = [pd.DataFrame(samples_gt[:, i], columns=["value"]).assign(coefficient=f"{idx[i]+1 if idx else i}") for i in
                   range(samples_gt.shape[-1])]
     gt_df = pd.concat(df_list_gt, ignore_index=True, sort=False)
     gt_df["sampler"] = "gt"
 
-    df_list_mcmc = [pd.DataFrame(samples_mcmc[:, i], columns=["value"]).assign(coefficient=f"{i}") for i in
+    df_list_mcmc = [pd.DataFrame(samples_mcmc[:, i], columns=["value"]).assign(coefficient=f"{idx[i]+1 if idx else i}") for i in
                     range(samples_mcmc.shape[-1])]
     mcmc_df = pd.concat(df_list_mcmc, ignore_index=True, sort=False)
     mcmc_df["sampler"] = "mcmc"
 
     if samples_flow is not None:
-        df_list_flow = [pd.DataFrame(samples_flow[:, i], columns=["value"]).assign(coefficient=f"{i}") for i in
+        df_list_flow = [pd.DataFrame(samples_flow[:, i], columns=["value"]).assign(coefficient=f"{idx[i]+1 if idx else i}") for i in
                         range(samples_flow.shape[-1])]
         flow_df = pd.concat(df_list_flow, ignore_index=True, sort=False)
         flow_df["sampler"] = "flow"
@@ -112,6 +118,11 @@ def plot_posterior_boxplot(samples_gt, samples_mcmc, samples_flow=None):
         samples_df = pd.concat([mcmc_df, gt_df], ignore_index=True, sort=False)
 
     sns.boxplot(data=samples_df, x="coefficient", y="value", hue="sampler", showfliers=False)
+
+    if jumps is not None:
+        for jump in jumps:
+            plt.axvline(x=jump - 0.5, color='red', linestyle='--', linewidth=1)
+
     plt.savefig("./mcmc_flow_boxplot.pdf", dpi=300)
     plt.show()
 
@@ -122,21 +133,18 @@ def mh_sampler(burnin=10000, chains=1000, iterations=20000, subsample=2000, dim=
     # test = Test(init, alphas, steps_sizes)
     from imf.experiments.dirichlet_sampler import Markov_dirichlet_given_logp
 
-    if dim < 6:  # these values are rough guesstimates
-        steps = [0.05, 0.2, 1.0]
-        alphas = [0.1, 1.0]
-    elif dim < 15:
-        steps = [0.01, 0.1, 1.0]
-        alphas = [0.05, 1.0, 2.0]
+    if dim < 10:  # these values are rough guesstimates
+        steps = [1e-1, 1.0]
+        alphas = [0.2, 1.5]
+    elif dim < 25:
+        steps = [5e-2, 1.0]#, 0.001, 1.0]
+        alphas = [0.2, 1.5]
     elif dim < 60:
-        steps = [0.00001, 0.0001, 0.002, 0.05, 1.0]#, 0.02, 0.05, 1.0]
-        alphas = [0.5, 1.0, 1.5]
-    else:
-        steps = [0.001, 0.01, 1.0]
-        alphas = [0.1, 1.0]
-    t_0 = 4
+        steps = [1e-4, 1.0]#, 0.02, 0.05, 1.0]
+        alphas = [0.2, 1.5]
+    t_0 = 1
     centered_props = False
-    steps_0 = [0.05, 0.2, 1.0] #[min(np.sqrt(t_0) * step, 1.0) for step in steps]
+    steps_0 = [1e-1] #[min(np.sqrt(t_0) * step, 1.0) for step in steps]#[0.05, 0.2, 1.0] #[min(np.sqrt(t_0) * step, 1.0) for step in steps]
     print("steps ", steps)
     print("steps_0 ", steps_0)
     print("alphas ", alphas)
@@ -144,7 +152,7 @@ def mh_sampler(burnin=10000, chains=1000, iterations=20000, subsample=2000, dim=
     alphas = torch.tensor(alphas, device=device, dtype=dtype)
     steps = torch.tensor(steps, device=device, dtype=dtype)
     steps_0 = torch.tensor(steps_0, device=device, dtype=dtype)
-    test = Markov_dirichlet_given_logp(init, alphas, steps, log_p=log_p, centered_props=centered_props, T_0=t_0, step_sizes_0=steps_0, temp_its_0=0.5 * burnin, temp_its=burnin * 0.8)
+    test = Markov_dirichlet_given_logp(init, alphas, steps, log_p=log_p, centered_props=centered_props, T_0=t_0, step_sizes_0=steps_0, temp_its_0=0.1 * burnin, temp_its=burnin * 0.4)
 
     it = test.iterator()
     startt = os.times()
@@ -174,21 +182,25 @@ def main():
     set_random_seeds(args.seed)
 
     # dimensions
-    d = 50
+    d = 6
     # gt setting
-    n = 30
-    alphas = 0.1 * torch.ones((1, d), device=args.device)
+    n = 8
+    alphas = 0.5 * torch.ones((1, d), device=args.device)
     num_gt_samples = 1000
+    target_multinomial = True
     # mcmc setting
-    chains = 2000
-    burnin = 20000
+    chains = 1000
+    burnin = 10000
     iterations = 10000
-    subsample = 2000
+    subsample = 5000
     # flow setting
     args.epochs = 2000
     args.n_context_samples = 500
     sample_size = 500
     n_iter = 100
+    # viz settings:
+    idx = [0,1,2,4,d-1]
+    jumps = [3,4]
 
     X_np = generate_multinomial_simplex(n=n, d=d)
     X_tensor = torch.from_numpy(X_np).float().to(device=args.device)
@@ -197,14 +209,21 @@ def main():
     dim_sort = np.argsort(gt_samples.mean(0))  # ascending
     dim_sort = dim_sort[::-1].copy()  # descending
 
-    log_unnorm_posterior = partial(unnorm_posterior_multinomial, X=X_tensor, alphas=alphas)#, flow_prior=flow_prior)
+    if target_multinomial:
+        log_unnorm_posterior = partial(unnorm_posterior_multinomial, X=X_tensor, alphas=alphas)#, flow_prior=flow_prior)
+    else:
+        from dirichlet_utils import Struct
+        log_unnorm_posterior = partial(dirichlet_prior, alpha=alphas[:,0], args=Struct({'log_cond':False}))
+        gt_samples = get_dirichlet_samples(alphas[0,0], num_gt_samples, d).detach().cpu().numpy()
+        #gt_samples = np.random.dirichlet(alphas.detach().cpu().numpy().ravel(), size=num_gt_samples)
 
     import time
     #time.sleep(1)
-    mh_samples = mh_sampler(burnin=burnin, chains=chains, iterations=iterations, subsample=subsample, dim=args.datadim,
-                            log_p=log_unnorm_posterior, dtype=torch.float64)
+    with torch.no_grad():
+        mh_samples = mh_sampler(burnin=burnin, chains=chains, iterations=iterations, subsample=subsample, dim=args.datadim,
+                                log_p=log_unnorm_posterior, dtype=torch.float64)
     mh_samples = mh_samples.reshape(-1, args.datadim).to(dtype=torch.float32)
-    plot_posterior_boxplot(gt_samples[:,dim_sort], mh_samples[:num_gt_samples,dim_sort])
+    plot_posterior_boxplot(gt_samples[:,dim_sort], mh_samples[:num_gt_samples,dim_sort], idx=idx, jumps=jumps)
 
     print("sleep")
     time.sleep(10000)
@@ -232,7 +251,7 @@ def main():
     samples = samples.reshape(-1, d)
     np.random.shuffle(samples)
 
-    plot_posterior_boxplot(samples_gt=gt_samples[:,dim_sort], samples_mcmc=mh_samples[:num_gt_samples,dim_sort], samples_flow=samples[:num_gt_samples,dim_sort])
+    plot_posterior_boxplot(samples_gt=gt_samples[:,dim_sort], samples_mcmc=mh_samples[:num_gt_samples,dim_sort], samples_flow=samples[:num_gt_samples,dim_sort], idx=idx, jumps=jumps)
 
 
 if __name__ == "__main__":
