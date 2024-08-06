@@ -182,10 +182,10 @@ def main():
     set_random_seeds(args.seed)
 
     # dimensions
-    d = 50
+    d = 30
     # gt setting
-    n = 25
-    alphas = 0.1 * torch.ones((1, d), device=args.device)
+    n = 20
+    alphas = 0.3 * torch.ones((1, d), device=args.device)
     num_gt_samples = 1000
     target_multinomial = True
     # mcmc setting
@@ -199,7 +199,7 @@ def main():
     sample_size = 500
     n_iter = 100
     # viz settings:
-    idx = [0,1,2,14,29,d-1]  # [0,1,2,4,9,d-1]
+    idx = [0,1,2,9,19,d-1]  # [0,1,2,4,9,d-1]
     jumps = [3,4,5]
 
     X_np = generate_multinomial_simplex(n=n, d=d)
