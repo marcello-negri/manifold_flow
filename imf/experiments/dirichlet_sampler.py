@@ -50,8 +50,9 @@ class Markov_dirichlet(ABC):
         proposed_scaled = cur + step[:,None] * (proposed - (self.average if self.centered_props else cur))
         return proposed_scaled
 
-    def eps_border(self, x, eps=1e-13):
-        return torch.clamp(x, min=0.0+eps, max=1.0-eps)
+    def eps_border(self, x, eps=1e-9):
+        border = torch.clamp(x, min=0.0+eps, max=1.0-eps)
+        return border / border.norm(dim=-1, keepdim=True)
 
     def pad_border(self, x, steps):
         pad = steps/self.dim
