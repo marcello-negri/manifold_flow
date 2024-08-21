@@ -240,8 +240,7 @@ def train_model_forward_(model, data, args, batch_size=1, context=None, alternat
     return model, np.array(loss)
 
 
-def train_model_reverse(model, args, dataset, train_data_np, batch_size=100_000, context=None, **kwargs):
-    from imf.experiments.plots import plot_angle_distribution, plot_samples_pca
+def train_model_reverse(model, args, dataset, batch_size=100_000, **kwargs):
 
     # optimizer = torch.optim.Adam([{'params':model.parameters()}, {'params':log_sigma, 'lr':1e-2}], lr=lr)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -266,14 +265,14 @@ def train_model_reverse(model, args, dataset, train_data_np, batch_size=100_000,
             kl_div.backward()
 
 
-            if epoch > 0:
-                T_old = cooling_function((epoch - 1) // (args.epochs / num_iter))
-                if T != T_old:
-                    samples_np = samples.detach().cpu().numpy()
-                    plot_angle_distribution(samples_flow=samples_np, samples_gt=train_data_np, device=args.device,
-                                            filename=f"./plots/{args.model_name.split('/')[-1]}_angles_T{T:.2f}.png")
-                    plot_samples_pca(samples_np, train_data_np,
-                                     filename=f"./plots/{args.model_name.split('/')[-1]}_angles_pca_T{T:.2f}.png")
+            # if epoch > 0:
+            #     T_old = cooling_function((epoch - 1) // (args.epochs / num_iter))
+            #     if T != T_old:
+            #         samples_np = samples.detach().cpu().numpy()
+            #         plot_angle_distribution(samples_flow=samples_np, samples_gt=train_data_np, device=args.device)#,
+                                            # filename=f"./plots/{args.model_name.split('/')[-1]}_angles_T{T:.2f}.png")
+                    # plot_samples_pca(samples_np, train_data_np,
+                    #                  filename=f"./plots/{args.model_name.split('/')[-1]}_angles_pca_T{T:.2f}.png")
 
             # torch.nn.utils.clip_grad_value_(model.parameters(), 1e-4)
             # torch.nn.utils.clip_grad_norm_(model.parameters(), 1e-4)
@@ -282,7 +281,7 @@ def train_model_reverse(model, args, dataset, train_data_np, batch_size=100_000,
             kl_div_ = kl_div.cpu().detach().numpy()
             loss.append(kl_div_)
             # print(f"Training loss at step {epoch}: {loss[-1]:.1f} and {loss_T[-1]:.1f} * (T = {T:.3f})")
-            print(f"Training loss at step {epoch} (T={T:.2f}): {loss[-1]:.3f}")
+            print(f"Training loss at step {epoch} (T={T:.2f}): {loss[-1]:.5f}")
             # print(f"logprob_flow: {logprob_flow.mean().cpu().detach().numpy():.3f} ")
                   # f"logprob_target: {logprob_target.mean().cpu().detach().numpy():.3f}")
             # if epoch % 20 ==0:
@@ -325,6 +324,8 @@ def train_regression_cond(model, log_unnorm_posterior, args, manifold, **kwargs)
             uniform_cond = (rand_cond * (args.cond_max - args.cond_min) + args.cond_min).view(-1, 1)
 
             samples, log_prob = model.sample_and_log_prob(num_samples=args.n_samples, context=uniform_cond)
+            # log_prob_ = model._log_prob(inputs=samples, context=uniform_cond)
+
             if torch.any(torch.isnan(samples)): breakpoint()
 
             if manifold:
@@ -332,25 +333,26 @@ def train_regression_cond(model, log_unnorm_posterior, args, manifold, **kwargs)
             else:
                 log_posterior = log_unnorm_posterior(beta=samples, cond=uniform_cond)
 
-            if isinstance(log_posterior, tuple):
-                _, log_prior, log_like = log_posterior
-                # k = 4.0  # >1 reduces the impact on the prior. <1 increases impact on prior. <0 for no impact
-                k =0.1  # >1 reduces the impact on the prior. <1 increases impact on prior. <0 for no impact
-                if T > 1:
-                    Tp = (T+k-1)/k
-                else:
-                    Tp = T
-                log_posterior_noT = log_prior+log_like
-                log_posterior = log_prior / Tp + log_like / T
-            else:
-                log_posterior_noT = log_posterior
-                log_posterior = log_posterior / T
-            kl_div = torch.mean(log_prob - log_posterior)
+            # if isinstance(log_posterior, tuple):
+            #     _, log_prior, log_like = log_posterior
+            #     # k = 4.0  # >1 reduces the impact on the prior. <1 increases impact on prior. <0 for no impact
+            #     k =0.1  # >1 reduces the impact on the prior. <1 increases impact on prior. <0 for no impact
+            #     if T > 1:
+            #         Tp = (T+k-1)/k
+            #     else:
+            #         Tp = T
+            #     log_posterior_noT = log_prior+log_like
+            #     log_posterior = log_prior / Tp + log_like / T
+            # else:
+            #     log_posterior_noT = log_posterior
+            #     log_posterior = log_posterior / T
+            kl_div = torch.mean(log_prob - log_posterior/T)
             kl_div.backward()
 
             optimizer.step()
 
-            loss.append(torch.mean(log_prob - log_posterior_noT).cpu().detach().numpy())
+            # loss.append(torch.mean(log_prob - log_posterior_noT).cpu().detach().numpy())
+            loss.append(torch.mean(log_prob - log_posterior).cpu().detach().numpy())
             loss_T.append(torch.mean(log_prob - log_posterior / T).cpu().detach().numpy())
             if epoch % 10 == 0:
                 print(f"Training loss at step {epoch}: {loss[-1]:.1f} and {loss_T[-1]:.1f} * (T = {T:.3f})")
@@ -376,13 +378,16 @@ def train_regression_cond(model, log_unnorm_posterior, args, manifold, **kwargs)
 #
 #     return samples, log_probs
 
-def generate_samples(model, args, n_lambdas=0, cond=False, log_unnorm_posterior=None, manifold=True, context_size=10, sample_size=100, n_iter=1000):
+def generate_samples(model, args, n_lambdas=0, cond=False, log_unnorm_posterior=None, manifold=True, given_cond=None, context_size=10, sample_size=100, n_iter=1000):
     it = 0
     samples_list, log_probs_list, kl_list, cond_list = [], [], [], []
     for _ in tqdm.tqdm(range(n_iter)):
         # it = it + 1
         if cond and log_unnorm_posterior is not None:
-            if n_lambdas == 0:
+            if given_cond is not None:
+                rand_cond = torch.ones(context_size, device=args.device) * given_cond
+                uniform_cond = rand_cond.view(-1, 1)
+            elif n_lambdas == 0:
                 rand_cond = torch.rand(context_size, device=args.device)
                 uniform_cond = (rand_cond * (args.cond_max - args.cond_min) + args.cond_min).view(-1, 1)
             else:

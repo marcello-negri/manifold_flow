@@ -107,6 +107,8 @@ def unnorm_lop_posterior(beta: torch.Tensor, cond: torch.Tensor, sigma:torch.Ten
     return log_lik + log_prior
 
 
+
+
 def main():
     # use ambient flow, meaning it is not defined on the Lp manifold
     args.architecture = "ambient"
@@ -118,14 +120,22 @@ def main():
 
     # load data
     X_tensor, y_tensor, X_np, y_np = load_diabetes_dataset(device=args.device)
-    noise_std = 1
-    sigma = torch.tensor(noise_std, device=args.device)
+    # noise_std = 1
+    # sigma = torch.tensor(noise_std, device=args.device)
+
+    # X_np, y_np, true_beta = generate_regression_dataset(n_samples=100, n_features=100, n_non_zero=80, noise_std=1)
+    # X_np, y_np, true_beta = generate_regression_dataset(n_samples=20, n_features=10, n_non_zero=8, noise_std=1)
+    # X_tensor = torch.from_numpy(X_np).float().to(device=args.device)
+    # y_tensor = torch.from_numpy(y_np).float().to(device=args.device)
+    sigma = torch.tensor(0.7, device=args.device)
     # X_np, y_np, true_beta = generate_regression_dataset(n_samples=100, n_features=50, n_non_zero=10, noise_std=noise_std)
-    alphas = plot_betas_lambda(samples=None, lambdas=None, X_np=X_np, y_np=y_np, sigma=sigma, gt_only=True, n_bins=51, norm=args.beta, conf=0.95, n_plots=1)#, true_coeff=true_beta)
-    lambda_min, lambda_max = np.log10(alphas.min() * X_np.shape[0]), np.log10(alphas.max() * X_np.shape[0])
+    # alphas = plot_betas_lambda(samples=None, lambdas=None, X_np=X_np, y_np=y_np, sigma=sigma.item(), gt_only=True, n_bins=51, norm=args.beta, conf=0.95, n_plots=1)#, true_coeff=true_beta)
+    # lambda_min, lambda_max = np.log10(alphas.min() * X_np.shape[0]), np.log10(alphas.max() * X_np.shape[0])
+    args.cond_min = -1
+    args.cond_max = 4
     # X_np, y_np, true_beta = generate_regression_dataset(n_samples=100, n_features=1000, noise_std=0.7)
-    X_tensor = torch.from_numpy(X_np).float().to(device=args.device)
-    y_tensor = torch.from_numpy(y_np).float().to(device=args.device)
+    # X_tensor = torch.from_numpy(X_np).float().to(device=args.device)
+    # y_tensor = torch.from_numpy(y_np).float().to(device=args.device)
     # log_unnorm_posterior = partial(gaussian_log_likelihood, sigma=sigma, X=X_tensor, y=y_tensor)
     log_unnorm_posterior = partial(unnorm_lop_posterior, sigma=sigma, X=X_tensor, y=y_tensor, args=args)
 
@@ -146,9 +156,19 @@ def main():
     # evaluate model
     flow.eval()
     samples, cond, kl = generate_samples(flow, args, cond=True, log_unnorm_posterior=log_unnorm_posterior,  context_size=10, sample_size=100, n_iter=100, manifold=False)
-    plot_betas_lambda(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, sigma=sigma, min_bin=0, max_bin=10, n_bins=20, norm=args.beta, conf=0.95, n_plots=1)#, true_coeff=true_beta)
+    plot_betas_lambda(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, sigma=sigma.item(), min_bin=0, max_bin=10, n_bins=20, norm=args.beta, conf=0.95, n_plots=1)#, true_coeff=true_beta)
     # plot_betas_lambda(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, sigma=sigma, n_bins=51, norm=args.beta, a=0.95, n_plots=1)
-    plot_marginal_likelihood(kl, cond, args)
+    # plot_marginal_likelihood(kl, cond, args)
+    np.save(f'./samples/samples_regression_lambda_{args.datadim}_{args.beta:.2f}.npy', samples)
+
+    opt_cond, opt_idx = plot_marginal_likelihood(kl, cond, args)
+    print(opt_cond)
+    # evaluate_likelihood(samples, sigma=sigma, X=X_tensor, Y=y_tensor, n_iter=100, device="cuda")
+    # breakpoint()
+    samples, cond, kl = generate_samples(flow, args, given_cond=np.log10(opt_cond), cond=True, log_unnorm_posterior=log_unnorm_posterior, manifold=False, context_size=1, sample_size=500, n_iter=1)
+    breakpoint()
+    # print(f"Optimal sigma via MLL: {opt_cond:.3f} (true: {sigma_true:.3f})")
+    np.save(f'./samples/samples_regression_lambda_{args.datadim}_{args.beta:.2f}_opt.npy', samples[0])
 
 
 if __name__ == "__main__":

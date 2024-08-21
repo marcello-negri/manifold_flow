@@ -3,8 +3,10 @@ import torch
 import numpy as np
 import scipy as sp
 
-from imf.experiments.utils_manifold import cartesian_to_spherical_torch
+from imf.experiments.utils_manifold import cartesian_to_spherical_torch, spherical_to_cartesian_torch
 from imf.experiments.vonmises_fisher import vMF, MixvMF
+
+from rpy2 import robjects
 
 
 class Dataset():
@@ -322,6 +324,26 @@ class LpUniform(Uniform):
         # breakpoint()
         return arr / norm_stable
 
+    def project(self, samples):
+        samples_torch = torch.from_numpy(samples).float()
+        samples_spherical = cartesian_to_spherical_torch(samples_torch)
+        theta = samples_spherical[:, 1:]
+        r = self.r_given_theta(theta)
+        theta_r = torch.cat([r, theta], dim=1)
+        outputs = spherical_to_cartesian_torch(theta_r)
+
+        return outputs.detach().cpu().numpy()
+
+    def r_given_theta(self, theta):
+        assert theta.shape[1] >= 2
+        eps = 1e-10
+
+        r_theta = torch.cat((torch.ones_like(theta[:,:1]), theta), dim=1)
+        cartesian = spherical_to_cartesian_torch(r_theta)
+        p_norm = torch.linalg.vector_norm(cartesian, ord=self.args.beta, dim=1)
+        r = 1 / (p_norm + eps)
+
+        return r.unsqueeze(-1)
 
 def create_dataset(args):
     if args.dataset == 'uniform':

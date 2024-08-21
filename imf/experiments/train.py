@@ -7,7 +7,7 @@ import argparse
 from imf.experiments.utils_manifold import train_model_forward, train_model_reverse, generate_samples
 from imf.experiments.utils_manifold import  define_model_name
 from imf.experiments.architecture import build_flow_forward, build_flow_reverse
-from imf.experiments.plots import plot_icosphere, plot_loss, plot_samples, plot_pairwise_angle_distribution, plot_angle_distribution, plot_samples_pca
+from imf.experiments.plots import plot_icosphere, plot_loss, plot_samples, plot_pairwise_angle_distribution, plot_angle_distribution, plot_samples_pca, density_gt
 from imf.experiments.datasets import create_dataset
 
 import logging
@@ -67,11 +67,21 @@ def create_directories():
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
 
+def evaluate_prob(samples, logp_flow, dataset):
+    logp_gt = density_gt(points=samples, dataset=dataset)
+    MSE_logp = np.sqrt(np.square(np.exp(logp_flow) - logp_gt).mean())
+    print(f"MSE prob: {MSE_logp:.5f}")
+    breakpoint()
+
+    return MSE_logp
+
+
 def main():
     # set random seed for reproducibility
     set_random_seeds(args.seed)
     create_directories()
 
+    # torch.autograd.set_detect_anomaly(True)
 
     # load dataset and samples
     dataset = create_dataset(args=args)
@@ -98,7 +108,7 @@ def main():
         if args.kl_div == "forward":
             flow, loss = train_model_forward(model=flow, data=train_data, args=args, batch_size=10_000, early_stopping=False)
         elif args.kl_div == "reverse":
-            flow, loss = train_model_reverse(model=flow, dataset=dataset, train_data_np=train_data_np, args=args)
+            flow, loss = train_model_reverse(model=flow, dataset=dataset, train_data_np=train_data_np, batch_size=10_000, args=args)
         plot_loss(loss)
         flow.eval()
     else:
@@ -110,10 +120,11 @@ def main():
         flow.eval()
 
     # evaluate learnt distribution
-    samples_flow, log_probs_flow = generate_samples(flow, args=args, sample_size=100, n_iter=100)
+    samples_flow, log_probs_flow = generate_samples(flow, args=args, sample_size=100, n_iter=10)
     n_samples = min(samples_flow.shape[0], train_data_np.shape[0])
+    MSE_prob = evaluate_prob(samples=samples_flow, logp_flow=log_probs_flow, dataset=dataset)
     plot_icosphere(data=train_data_np[:n_samples], dataset=dataset, flow=flow, samples_flow=samples_flow[:n_samples],
-                   rnf=None, samples_rnf=None, device='cuda', args=args, plot_rnf=False)
+                   rnf=None, samples_rnf=None, device='cuda', args=args, plot_rnf=False, not_sphere=True)
     if args.dataset == "uniform":
         plot_pairwise_angle_distribution(samples_flow, n_samples=1000)
     plot_angle_distribution(samples_flow=samples_flow, samples_gt=train_data_np, device=args.device)

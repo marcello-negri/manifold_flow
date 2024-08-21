@@ -89,6 +89,9 @@ def plot_density_manifold(samples, xyz, args, gt=True):
         plt.savefig(f"./plots/density_plot_{(args.model_name).split('/')[-1]}_flow.pdf", dpi=300)
     plt.show()
 
+    probs = kde_func(xyz.T)
+    return probs
+
 def plot_comparison(dataset, flow, samples_gt, samples_flow, args, n_gridpoints=100, alternative=False):
     fig = plt.figure(figsize=(15, 15))
     ax = fig.add_subplot(projection='3d')
@@ -110,7 +113,7 @@ def plot_comparison(dataset, flow, samples_gt, samples_flow, args, n_gridpoints=
     z = dataset.hypersurface(xy_np)
     xyz_gt = np.c_[xy_np, z]
 
-    plot_density_manifold(samples_gt, xyz_gt, args, gt=True)
+    probs_gt = plot_density_manifold(samples_gt, xyz_gt, args, gt=True)
 
     # manifold from flow
     xy_ = torch.cat((xy, torch.ones_like(xy[:,:1])), dim=1)
@@ -122,12 +125,15 @@ def plot_comparison(dataset, flow, samples_gt, samples_flow, args, n_gridpoints=
         xyz_flow, _ = flow._transform._transforms[0].inverse(xy_flow, context=None)
 
     xyz_flow = xyz_flow.detach().cpu().numpy()
-    plot_density_manifold(samples_flow, xyz_flow, args, gt=False)
+    probs_flow = plot_density_manifold(samples_flow, xyz_flow, args, gt=False)
 
-    MSE = np.sqrt(np.square(z-xyz_flow[:,-1]).sum(-1))
+    MSE_prob = np.sqrt(np.square(probs_gt - probs_flow).mean())
+    MSE_manifold = np.sqrt(np.square(z-xyz_flow[:,-1]).mean(-1))
+    print(MSE_prob)
+    print(MSE_manifold)
 
     f = open(args.model_name + ".txt", "a")
-    f.write(f"MSE: {MSE:.5f}")
+    f.write(f"MSE: {MSE_manifold:.5f}")
     f.close()
 
     return MSE

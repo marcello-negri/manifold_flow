@@ -45,7 +45,7 @@ def plot_samples(samples, n_samples=10000):
     else:
         print(f"Skipping 3D plot because d={samples.shape[-1]}")
 
-def plot_icosphere(data, dataset, flow, samples_flow, rnf, samples_rnf, kde=False, device='cuda', args=None, plot_rnf=False):
+def plot_icosphere(data, dataset, flow, samples_flow, rnf, samples_rnf, kde=False, device='cuda', args=None, plot_rnf=False, not_sphere=False):
     # load regular grid in spherical coordinates
     mesh = load_mesh()
     points = mesh.points
@@ -53,28 +53,36 @@ def plot_icosphere(data, dataset, flow, samples_flow, rnf, samples_rnf, kde=Fals
     # plot ground truth density
     fig = plt.figure(figsize=(15, 15))
     ax11 = fig.add_subplot(231, projection='3d')
-    plot_samples_ax(ax11, data, title="ground truth")
+    # plot_samples_ax(ax11, data, title="ground truth")
     ax21 = fig.add_subplot(234, projection='3d')
     if kde:
         plot_density(ax21, data, points, title="ground truth")
     else:
         logp_simulator = partial(density_gt, dataset=dataset)
-        plot_logp(ax21, logp_function=logp_simulator, points_surface=points, title="gt")
+        if not_sphere:
+            points_projected = dataset.project(points)
+            plot_logp(ax21, logp_function=logp_simulator, points_surface=points_projected, title="gt")
+        else:
+            plot_logp(ax21, logp_function=logp_simulator, points_surface=points, title="gt")
 
     # plot manifold flow density
     # project point on the learnt surface
     points_torch = torch.from_numpy(points).float().to(device).requires_grad_(True)
-    angles = flow.transform_to_noise(points_torch, context=None)
-    uniform_surface_flow, logabsdet = flow._transform.inverse(angles, context=None)
+    if args.kl_div == "forward":
+        angles = flow.transform_to_noise(points_torch, context=None)
+        uniform_surface_flow, logabsdet = flow._transform.inverse(angles, context=None)
+    else:
+        thetas, _ = flow._transform._transforms[0].forward(points_torch, context=None)
+        uniform_surface_flow, _ = flow._transform._transforms[0].inverse(thetas, context=None)
     points_surface_flow = uniform_surface_flow.detach().cpu().numpy()
 
     ax12 = fig.add_subplot(232, projection='3d')
-    plot_samples_ax(ax12, samples_flow, title="ours")
+    # plot_samples_ax(ax12, samples_flow, title="ours")
     ax22 = fig.add_subplot(235, projection='3d')
     if kde:
         plot_density(ax22, samples_flow, points_surface_flow, title="ours")
     else:
-        logp_flow = partial(density_flow, flow=flow)
+        logp_flow = partial(density_flow, flow=flow, args=args)
         plot_logp (ax22, logp_function=logp_flow, points_surface=points_surface_flow, title="ours")
     # plot rectangular normalizing flos density
     # project point on the learnt surface
@@ -126,10 +134,11 @@ def map_colors(p3dc, func, kde=False, cmap='viridis', inpute_nans=True):
         values[idx] = np.ones(n_nans) * avg
 
     # usual stuff
-    norm = Normalize()#vmin=0, vmax=1)
+    # norm = Normalize()#vmin=0, vmax=1)
+    norm = Normalize(vmin=0.065, vmax=0.10)
     # norm = LogNorm()#vmin=0, vmax=1)
     colors = get_cmap(cmap)(norm(values))
-
+    breakpoint()
     # set the face colors of the Poly3DCollection
     p3dc.set_fc(colors)
 
@@ -162,19 +171,23 @@ def density_gt (points, dataset):
     return logp.exp().detach().cpu().numpy()
     # return logp.detach().cpu().numpy()
 
-def density_flow (points, flow, batch_size=1000, device="cuda"):
+def density_flow (points, flow, args, batch_size=1000, device="cuda"):
     logp_flow = []
     n_iter = points.shape[0] // batch_size
     if n_iter * batch_size < points.shape[0]: n_iter += 1
     for i in tqdm.tqdm(range(n_iter)):
         left, right = i * batch_size, (i + 1) * batch_size
-        points_torch = torch.from_numpy(points[left:right]).float().to(device).requires_grad_(True)
-        angles = flow.transform_to_noise(points_torch, context=None)
-        logp_flow_ = flow._distribution.log_prob(angles, context=None)
-        uniform_surface_flow, logabsdet = flow._transform.inverse(angles, context=None)
-        logp_flow_ = logp_flow_ - logabsdet
-        logp_flow += list(logp_flow_.detach().cpu().numpy())
-
+        if args.kl_div == "forward":
+            points_torch = torch.from_numpy(points[left:right]).float().to(device).requires_grad_(True)
+            angles = flow.transform_to_noise(points_torch, context=None)
+            logp_flow_ = flow._distribution.log_prob(angles, context=None)
+            uniform_surface_flow, logabsdet = flow._transform.inverse(angles, context=None)
+            logp_flow_ = logp_flow_ - logabsdet
+            logp_flow += list(logp_flow_.detach().cpu().numpy())
+        elif args.kl_div == "reverse":
+            points_torch = torch.from_numpy(points[left:right]).float().to(device).requires_grad_(True)
+            logp_flow_ = flow.log_prob(points_torch, context=None)
+            logp_flow += list(logp_flow_.detach().cpu().numpy())
     return np.exp(np.array(logp_flow))
     # return logp_flow.detach().cpu().numpy()
 
@@ -475,7 +488,7 @@ def plot_betas_lambda(samples, lambdas, X_np, y_np, sigma, gt_only=False, min_bi
     if gt == 'linear_regression':
         if norm == 2:
             beta_path = np.array([Ridge(alpha=alpha, fit_intercept=False).fit(X_np, y_np).coef_
-                                  for alpha in tqdm.tqdm(lambdas * sigma.item() ** 2)])
+                                  for alpha in tqdm.tqdm(lambdas * sigma ** 2)])
             alphas = lambdas
         else:
             alphas, beta_path, _ = lasso_path(X_np, y_np)

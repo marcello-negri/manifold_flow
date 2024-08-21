@@ -8,9 +8,8 @@ import argparse
 
 from functools import partial
 
-from imf.experiments.utils_manifold import train_regression_cond, generate_samples
 from imf.experiments.datasets import load_diabetes_dataset, generate_regression_dataset, generate_regression_dataset_positive_coeff
-from imf.experiments.architecture import build_cond_flow_reverse, build_simple_circular_cond_flow_l1_manifold, build_simple_cond_flow_l1_manifold, build_circular_cond_flow_l1_manifold
+from imf.experiments.architecture import build_circular_flow_l1_manifold, build_simple_circular_cond_flow_l1_manifold, build_simple_cond_flow_l1_manifold, build_circular_cond_flow_l1_manifold
 from imf.experiments.plots import plot_betas_lambda_fixed_norm, plot_loss, plot_sparsity_distr, plot_cumulative_returns_singularly, plot_sparsity_patterns, plot_betas_lambda, plot_marginal_likelihood, plot_returns, plot_cumulative_returns
 
 import logging
@@ -51,198 +50,177 @@ def set_random_seeds (seed=1234):
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-def gaussian_log_likelihood(beta: torch.Tensor, sigma: torch.Tensor, X: torch.Tensor, y: torch.Tensor, ):
-    # implements Gaussian log-likelihood beta ~ Normal (X@beta, sigma^2 ID)
-    eps = 1e-7
-    log_lk = - 0.5 * (y - beta @ X.T).square().sum(-1) / (sigma**2 + eps)
-    log_lk_const = - X.shape[0] * torch.log((sigma + eps) * np.sqrt(2. * np.pi))
-
-    return log_lk + log_lk_const
-
-def lp_norm_prior(beta: torch.Tensor, cond: torch.Tensor, args):
-    if args.log_cond: lamb_ = 10 ** cond
-    else: lamb_ = cond
-
-    p = args.beta
-
-    log_const = torch.log(lamb_) / p + np.log(0.5 * p) - sp.special.loggamma(1./p)
-    log_prior = - lamb_ * (torch.linalg.vector_norm(beta, ord=p, dim=-1)**p)
-    log_prior_lp = log_prior + beta.shape[-1] * log_const
-
-    return log_prior_lp
-
-def dirichlet_prior(beta: torch.Tensor, alpha: torch.Tensor, args):
-    if args.log_cond: alpha_ = 10 ** alpha
-    else: alpha_ = alpha
+def dirichlet_prior(beta: torch.Tensor, alpha: torch.Tensor, args=None):
+    # if args.log_cond: alpha_ = 10 ** alpha
+    # else: alpha_ = alpha
 
     K = beta.shape[-1]
-    log_const = torch.lgamma(alpha_ * K) - K * torch.lgamma(alpha_)
-    log_prior = (alpha_ - 1) * torch.log(beta).sum(-1)
+    log_const = torch.lgamma(alpha * K) - K * torch.lgamma(alpha)
+    log_prior = (alpha - 1) * torch.log(beta).sum(-1)
 
     return log_const + log_prior
 
+def generate_archetypes(dim, n_samples, n_archetypes, noise=0.05, alpha=1., seed=1234):
+    set_random_seeds(seed)
 
-def unnorm_log_posterior(beta: torch.Tensor, prior_name: str, cond: torch.Tensor, sigma:torch.Tensor, X: torch.Tensor, y: torch.Tensor, args, flow_prior=None):
-    log_lik = gaussian_log_likelihood(beta=beta, sigma=sigma, X=X, y=y)
-    # log_lik = gaussian_log_likelihood_mean(beta=beta, sigma=sigma, X=X, mu=y)
-    # log_prior = laplace_prior(beta=beta, lamb=cond, argss=args)
-    if prior_name == "lp_norm":
-        log_prior = lp_norm_prior(beta=beta, cond=cond, args=args)
-    elif prior_name == "lp_norm_normalized":
-        log_prior = lp_norm_prior_on_manifold(beta=beta, lamb=cond, flow=flow_prior, args=args)
-    elif prior_name == "dirichlet":
-        log_prior = dirichlet_prior(beta=beta, alpha=cond, args=args)
-    elif prior_name == "uniform":
-        log_prior = dirichlet_prior(beta=beta, alpha=torch.zeros_like(cond), args=args)
-    else:
-        raise ValueError(f"Prior {prior_name} not recognized")
-    # log_prior = dirichlet_prior_beta(beta=beta)
+    archetypes = np.random.rand(n_archetypes, dim)
+    coefficients = np.random.dirichlet(np.ones(n_archetypes) * alpha, size=n_samples,)
 
-    # log_prior = lp_norm_prior_on_manifold(beta=beta, lamb=cond, flow=flow_prior, args=args)
-    # breakpoint()
-    return log_lik + log_prior
+    data = coefficients @ archetypes
+    data += noise * np.random.randn(n_samples, dim)
 
-def unnorm_posterior_cond_likelihood(beta: torch.Tensor, cond: torch.Tensor, X: torch.Tensor, y: torch.Tensor, args):
-    sigmas = 10 ** cond if args.log_cond else cond
-    log_lik = gaussian_log_likelihood(beta=beta, sigma=sigmas, X=X, y=y)
-    alpha = torch.zeros_like(cond) if args.log_cond else torch.ones_like(cond)
-    log_prior = dirichlet_prior(beta=beta, alpha=alpha, args=args)
-    return log_lik + log_prior
+    plot_archetypes(data, archetypes)
 
-def t_student_log_likelihood(beta: torch.Tensor, a0: torch.Tensor, b0: torch.Tensor, X: torch.Tensor, y: torch.Tensor):
+    return data, archetypes
 
-    N = X.shape[0]
-    log_lk = -(a0 + 0.5 * N) * torch.log(1 + 0.5 * (y - beta @ X.T).square().sum(-1) / b0 )
-    log_lk_const = torch.lgamma(a0 + 0.5 * N) - torch.lgamma(a0) - 0.5 * N * torch.log(2 * np.pi * b0)
-
-    return log_lk + log_lk_const
-
-def compute_norm_generalized_gaussian(args):
-    args.log_cond = True
-    set_random_seeds(args.seed)
-    flow = build_simple_cond_flow_l1_manifold(args, n_layers=2, n_hidden_features=32, n_context_features=32, clamp_theta=False)
-    # flow = build_simple_circular_cond_flow_l1_manifold(args, n_layers=3, n_hidden_features=64, n_context_features=64)
-    model_name = f"/home/negri0001/Documents/Marcello/cond_flows/manifold_flow/imf/experiments/models/generalized_gaussian_dim{args.datadim}_p{args.beta}_lmin{args.cond_min}_lmax{args.cond_max}"
-    lp_norm_prior_ = partial(lp_norm_prior, args=args)
-    if not os.path.isfile(model_name):
-        flow, loss, loss_T = train_regression_cond(flow, lp_norm_prior_, args=args, manifold=False)
-        torch.save(flow.state_dict(), model_name)
-        plot_loss(loss)
-    else:
-        flow.load_state_dict(torch.load(model_name))
-
-    return flow
-
-def lp_norm_prior_on_manifold(beta: torch.Tensor, lamb: torch.Tensor, flow, args):
-    # if args.log_cond: lamb_ = 10 ** lamb
-    # else: lamb_ = lamb
-
-    dim = beta.shape[-1]
-    beta = torch.clamp(beta, min=1e-3)
-    with torch.no_grad():
-        log_prob = flow.log_prob(beta.reshape(-1, dim), context=lamb.repeat(1,beta.shape[1]).reshape(-1,1))
-    return log_prob.reshape(*beta.shape[:2])
-
-def load_returns_dataset(stock_to_replicate=0, timesteps=-1, n_stocks_portfolio=-1):
-    # the dataset contains returns of 99 stocks expressed in relative terms r_i = (p_i - p_i-1)/p_i-1
-    df = pd.read_csv("./imf/experiments/ret_rf.csv")
-    df = df.dropna(axis=1) # timesteps x stocks
-    dates = df.iloc[:,0].values
-    df_np = df.iloc[:,1:n_stocks_portfolio].values.T # stocks x timesteps
-    df_np = df_np + 1 # convert relative returns to price ratios i.e. r'_i = p_i/p_i-1
-    df_np = np.c_[np.ones((df_np.shape[0], 1)), df_np]
-
-    if False:
-        cum_return = np.cumprod(df_np.T, axis=0)
-        fig, axs = plt.subplots(1, 2, figsize=(10, 5))
-        axs[0].plot(cum_return)
-        axs[1].plot(cum_return.mean(1), label="average stock return")
-        axs[1].plot(cum_return[:, stock_to_replicate], linestyle='--', color='r', label="stock to replicate")
-        plt.legend()
+def plot_archetypes(data, archetypes):
+    if data.shape[-1] == 2:
+        plt.scatter(data[:, 0], data[:, 1], alpha=0.7)
+        plt.scatter(archetypes[:, 0], archetypes[:, 1], c='red', marker='x')
+        plt.title("Synthetic Dataset (2D)")
+        plt.show()
+    elif data.shape[-1] == 3:
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+        ax.scatter(data[:, 0], data[:, 1], data[:, 2], alpha=0.7)
+        ax.scatter(archetypes[:, 0], archetypes[:, 1], archetypes[:, 2], c='red', marker='x')
+        ax.set_title("Synthetic Dataset (3D)")
         plt.show()
 
-    X_np = df_np[np.arange(df_np.shape[0]) != stock_to_replicate, :timesteps].T
-    y_np = df_np[stock_to_replicate, :timesteps].reshape(1, -1)
+def log_likelihood(X, _W, H):
+    W = torch.softmax(_W, dim=1)
+    return -(X - H @ W @ X).square().sum(-1)
 
-    cum_return = np.cumprod(X_np, axis=0)
-    fig, axs = plt.subplots(1, 2, figsize=(10, 5))
-    axs[0].plot(cum_return)
-    axs[1].plot(cum_return.mean(1), label="average stock return")
-    axs[1].plot(cum_return[:, stock_to_replicate], linestyle='--', color='r', label="stock to replicate")
-    plt.show()
+def unnorm_log_posterior(H: torch.Tensor, X: torch.Tensor, _W: torch.Tensor, args):
+    # log_lik = log_likelihood(X=X, _W=_W, H=H)
+    # alphas = torch.ones_like(beta)
+    # log_prior = dirichlet_prior(beta=beta, alpha=alphas, args=args).sum(-1)
+    log_prior = dirichlet_prior(beta=H, alpha=torch.ones_like(H[:,0])*0.1, args=args)
+    return log_prior# log_lik #+ log_prior
 
 
+from utils_manifold import gen_cooling_schedule
+import time
+from datetime import timedelta
+def train_regression_cond(model, log_unnorm_posterior, args, **kwargs):
+    optimizer = torch.optim.Adam([
+        {'params': model.parameters(), 'lr': args.lr},
+        # {'params': [tensor], 'lr': 0.1}
+    ])
 
-    return dates[:timesteps], X_np, y_np
 
-def generate_regression_simplex (n, d, sigma=0.1):
-    X_np = np.random.randn(n, d)
-    beta = np.random.rand(d)
-    beta /= beta.sum() # normalize the weights on the simplex
-    y_np = X_np @ beta + np.random.randn(n) * sigma
+    # set up cooling schedule
+    num_iter = args.epochs // args.iter_per_cool_step
+    cooling_function = gen_cooling_schedule(T0=args.T0, Tn=args.Tn, num_iter=num_iter - 1, scheme='exp_mult')
 
-    return X_np, y_np
+    loss, loss_T = [], []
+    try:
+        start_time = time.monotonic()
+        for epoch in range(args.epochs):
+            T = cooling_function(epoch // (args.epochs / num_iter))
+            optimizer.zero_grad()
+
+            samples, log_prob = model.sample_and_log_prob(num_samples=args.n_samples)
+            if torch.any(torch.isnan(samples)): breakpoint()
+
+            log_posterior = log_unnorm_posterior(H=samples)
+            kl_div = torch.mean(log_prob - log_posterior/T)
+            kl_div.backward()
+
+            optimizer.step()
+
+            loss.append(torch.mean(log_prob - log_posterior).cpu().detach().numpy())
+            loss_T.append(torch.mean(log_prob - log_posterior / T).cpu().detach().numpy())
+            if epoch % 10 == 0:
+                print(f"Training loss at step {epoch}: {loss[-1]:.3f} and {loss_T[-1]:.3f} * (T = {T:.3f})")
+
+    except KeyboardInterrupt:
+        print("interrupted..")
+
+    end_time = time.monotonic()
+    time_diff = timedelta(seconds=end_time - start_time)
+    print(f"Training took {time_diff} seconds")
+
+    return model, loss, loss_T
+
+def train_linear_model(H_tensor, W_tensor, X):
+    optimizer = torch.optim.Adam([
+        {'params': [H_tensor, W_tensor], 'lr': 0.1},
+    ])
+
+    # m = torch.distributions.dirichlet.Dirichlet(torch.ones(W_tensor.shape[0]))
+
+    loss_list = []
+    try:
+        start_time = time.monotonic()
+        for epoch in range(args.epochs):
+            optimizer.zero_grad()
+
+            # H_tensor = torch.rand(W_tensor.shape[::-1]).to(W_tensor.device)
+            H = torch.softmax(H_tensor, dim=1)
+            # H = m.rsample([W_tensor.shape[1]]).to(W_tensor.device)
+            W = torch.softmax(W_tensor, dim=1)
+            loss = torch.square(X - H @ W @ X).sum()
+            loss.backward()
+
+            optimizer.step()
+
+            loss_list.append(loss.cpu().detach().numpy())
+            if epoch % 200 == 0:
+                print(f"Training loss at step {epoch}: {loss_list[-1]:.4f}")
+
+    except KeyboardInterrupt:
+        print("interrupted..")
+
+    end_time = time.monotonic()
+    time_diff = timedelta(seconds=end_time - start_time)
+    print(f"Training took {time_diff} seconds")
+
+    return loss_list
+
 
 def main():
-    just_load = False # False: train model and save samples. True: load the samples
-    args.log_cond = True
-    prior_name = "dirichlet" # independent of args.cond_min and args.cond_max
-    # prior_name = "lp_norm_normalized"
-
-    # prior_name = "uniform" # argscond_min=-2 args.cond_max = 0
-
-    # set random seed for reproducibility
     set_random_seeds(args.seed)
 
-    # load data
-    # dates, X_np, y_np = load_returns_dataset(stock_to_replicate=7, timesteps=-353, n_stocks_portfolio=-87)
-    # dates, X_np, y_np = load_returns_dataset(stock_to_replicate=0, timesteps=-353, n_stocks_portfolio=-7)
-    sigma_true = 0.09
-    X_np, y_np = generate_regression_simplex(n=20, d=3, sigma=sigma_true)
+    dim = 2
+    n_samples = 200
+    args.n_samples = n_samples
+    n_archetypes = 5
+    X_np, archetypes = generate_archetypes(dim=dim, n_samples=n_samples, n_archetypes=n_archetypes,
+                                           noise=0.00, alpha=0.2, seed=1234)
     X_tensor = torch.from_numpy(X_np).float().to(device=args.device)
-    y_tensor = torch.from_numpy(y_np).float().to(device=args.device)
-    args.datadim = X_tensor.shape[1]
+    args.datadim = n_archetypes
 
-    # args.epochs = 1000
-    # flow_prior = compute_norm_generalized_gaussian(args)
 
-    args.epochs = 500
-    # sigma = torch.tensor(1, device=args.device)
-    # log_unnorm_posterior = partial(unnorm_log_posterior, prior_name=prior_name, sigma=sigma, X=X_tensor, y=y_tensor, args=args)#, flow_prior=flow_prior)
-    log_unnorm_posterior = partial(unnorm_posterior_cond_likelihood, X=X_tensor, y=y_tensor, args=args)#, flow_prior=flow_prior)
+    # train simple linear model for MAP
+    H_tensor = torch.nn.Parameter(torch.rand((n_samples, n_archetypes), requires_grad=True).to(device=args.device))
+    W_tensor = torch.nn.Parameter(torch.rand((n_archetypes, n_samples), requires_grad=True).to(device=args.device))
+    args.n_epochs = 5000
+    loss = train_linear_model(H_tensor, W_tensor, X_tensor)
+    plot_loss(loss)
 
-    if not just_load:
-        # build model
-        flow = build_circular_cond_flow_l1_manifold(args)
+    learnt_archetypes = torch.softmax(W_tensor, dim=1) @ X_tensor
+    samples = torch.softmax(H_tensor, dim=1) @ learnt_archetypes
+    plot_archetypes(samples.detach().cpu().numpy(), learnt_archetypes.detach().cpu().numpy())
 
-        # train model
-        flow.train()
-        flow, loss, loss_T = train_regression_cond(flow, log_unnorm_posterior, args=args, manifold=False)
-        plot_loss(loss)
+    # build flow
+    args.n_epochs = 1000
+    flow = build_circular_flow_l1_manifold(args)
+    # _W = torch.nn.Parameter(torch.rand((n_archetypes, n_samples), requires_grad=True).to(device=args.device))
+    # log_unnorm_posterior = partial(unnorm_log_posterior, X=X_tensor, args=args)
+    log_unnorm_posterior = partial(unnorm_log_posterior, X=X_tensor, _W=W_tensor, args=args)
 
-        # evaluate model
-        flow.eval()
-        samples, cond, kl = generate_samples(flow, args, n_lambdas=50, cond=True, log_unnorm_posterior=log_unnorm_posterior, manifold=False, context_size=1, sample_size=200, n_iter=1)
-        plot_betas_lambda_fixed_norm(samples=samples, lambdas=cond, dim=X_np.shape[-1], conf=0.95, n_plots=1, log_scale=args.log_cond)
+    # train model
+    flow.train()
+    flow, loss, loss_T = train_regression_cond(flow, log_unnorm_posterior, tensor=W_tensor, args=args)
+    plot_loss(loss)
 
-        # uncomment to plot cumulative returns
-        # samples, cond, kl = generate_samples(flow, args, n_lambdas=5, cond=True, log_unnorm_posterior=log_unnorm_posterior,
-        #                                      manifold=False, context_size=1, sample_size=100, n_iter=1)
-        # plot_returns(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, conf=0.95, n_plots=1)
-        # plot_cumulative_returns(samples=samples, lambdas=cond, X_np=X_np, y_np=y_np, conf=0.95, n_plots=1, prior_name=prior_name)
-        # plot_sparsity_patterns(samples=samples[:, :30], prior_name=prior_name)
-
-        # samples, cond, kl = generate_samples(flow, args, n_lambdas=25, cond=True, log_unnorm_posterior=log_unnorm_posterior,
-        #                                      manifold=False, context_size=1, sample_size=500, n_iter=1)
-        opt_cond, opt_idx = plot_marginal_likelihood(kl, cond, args)
-        print(f"Optimal sigma via MLL: {opt_cond:.3f} (true: {sigma_true:.3f})")
-        np.save(f'data_{prior_name}.npy', samples)
-    else:
-        samples_uniform = np.load('data_uniform.npy')  # load
-        samples_dirichlet = np.load('data_dirichlet.npy')  # load
-
-        plot_sparsity_distr(samples_uniform, samples_dirichlet, X_np, y_np, threshold=0.01, n_bins=25)
-
+    # evaluate model
+    flow.eval()
+    H, log_prob = flow.sample_and_log_prob(num_samples=n_samples)
+    learnt_archetypes = torch.softmax(W_tensor, dim=1) @ X_tensor
+    samples = H @ learnt_archetypes
+    plot_archetypes(samples.detach().cpu().numpy(), learnt_archetypes.detach().cpu().numpy())
 
 if __name__ == "__main__":
     main()
