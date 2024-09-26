@@ -243,21 +243,21 @@ def build_flow_circular_rvs(flow_dim, n_layers=3, hidden_features=256, device='c
 
     for _ in range(n_layers):
         # transformation_layers.append(RandomPermutation(features=flow_dim - 1))
-        transformation_layers.append(
-                CircularAutoregressiveRationalQuadraticSpline(num_input_channels=flow_dim - 1,
-                                                              num_hidden_channels=hidden_features,
-                                                              num_blocks=3, num_bins=10, tail_bound=1,
-                                                              ind_circ=[i for i in range(flow_dim - 1)])
-        )
         # transformation_layers.append(
-        #     # InverseTransform(
-        #         CircularCoupledRationalQuadraticSpline(num_input_channels=flow_dim - 1,
-        #                                                num_hidden_channels=hidden_features,
-        #                                                num_blocks=3, num_bins=8, tail_bound=1,
-        #                                                ind_circ=[i for i in range(flow_dim - 1)])
-        #     # )
-        #
+        #         CircularAutoregressiveRationalQuadraticSpline(num_input_channels=flow_dim - 1,
+        #                                                       num_hidden_channels=hidden_features,
+        #                                                       num_blocks=5, num_bins=10, tail_bound=1,
+        #                                                       ind_circ=[i for i in range(flow_dim - 1)])
         # )
+        transformation_layers.append(
+            # InverseTransform(
+                CircularCoupledRationalQuadraticSpline(num_input_channels=flow_dim - 1,
+                                                       num_hidden_channels=hidden_features,
+                                                       num_blocks=5, num_bins=10, tail_bound=1,
+                                                       ind_circ=[i for i in range(flow_dim - 1)])
+            # )
+
+        )
 
     transformation_layers.append(
         InverseTransform(

@@ -45,7 +45,7 @@ def plot_samples(samples, n_samples=10000):
     else:
         print(f"Skipping 3D plot because d={samples.shape[-1]}")
 
-def plot_icosphere(data, dataset, flow, samples_flow, rnf, samples_rnf, kde=False, device='cuda', args=None, plot_rnf=False, not_sphere=False):
+def plot_icosphere(data, dataset, flow, samples_flow, rnf, samples_rnf, kde=False, device='cuda', args=None, plot_rnf=False, sphere=True):
     # load regular grid in spherical coordinates
     mesh = load_mesh()
     points = mesh.points
@@ -59,11 +59,11 @@ def plot_icosphere(data, dataset, flow, samples_flow, rnf, samples_rnf, kde=Fals
         plot_density(ax21, data, points, title="ground truth")
     else:
         logp_simulator = partial(density_gt, dataset=dataset)
-        if not_sphere:
-            points_projected = dataset.project(points)
-            plot_logp(ax21, logp_function=logp_simulator, points_surface=points_projected, title="gt")
+        if sphere:
+            plot_logp(ax21, fig=fig, logp_function=logp_simulator, points_surface=points, title="gt")
         else:
-            plot_logp(ax21, logp_function=logp_simulator, points_surface=points, title="gt")
+            points_projected = dataset.project(points)
+            plot_logp(ax21, fig=fig, logp_function=logp_simulator, points_surface=points_projected, title="gt")
 
     # plot manifold flow density
     # project point on the learnt surface
@@ -83,7 +83,7 @@ def plot_icosphere(data, dataset, flow, samples_flow, rnf, samples_rnf, kde=Fals
         plot_density(ax22, samples_flow, points_surface_flow, title="ours")
     else:
         logp_flow = partial(density_flow, flow=flow, args=args)
-        plot_logp (ax22, logp_function=logp_flow, points_surface=points_surface_flow, title="ours")
+        plot_logp (ax22, fig=fig, logp_function=logp_flow, points_surface=points_surface_flow, title="ours")
     # plot rectangular normalizing flos density
     # project point on the learnt surface
 
@@ -97,7 +97,7 @@ def plot_icosphere(data, dataset, flow, samples_flow, rnf, samples_rnf, kde=Fals
             plot_density(ax23, samples_rnf, points_surface_rnf, title="rnf")
         else:
             logp_rnf = partial(density_rnf, rnf=rnf, args=args)
-            plot_logp(ax23, logp_function=logp_rnf, points_surface=points_surface_rnf, title="rnf")
+            plot_logp(ax23, fig=fig, logp_function=logp_rnf, points_surface=points_surface_rnf, title="rnf")
 
     plt.savefig(f"./plots/density_plot_{(args.model_name).split('/')[-1]}.pdf", dpi=300)
     plt.show()
@@ -134,11 +134,10 @@ def map_colors(p3dc, func, kde=False, cmap='viridis', inpute_nans=True):
         values[idx] = np.ones(n_nans) * avg
 
     # usual stuff
-    # norm = Normalize()#vmin=0, vmax=1)
-    norm = Normalize(vmin=0.065, vmax=0.10)
+    norm = Normalize()#vmin=0, vmax=1)
+    # norm = Normalize(vmin=0.065, vmax=0.10)
     # norm = LogNorm()#vmin=0, vmax=1)
     colors = get_cmap(cmap)(norm(values))
-    breakpoint()
     # set the face colors of the Poly3DCollection
     p3dc.set_fc(colors)
 
@@ -196,7 +195,7 @@ def density_rnf (points, rnf, args):
 
     return np.exp(logp_rnf)
 
-def plot_logp (ax, logp_function, points_surface, title):
+def plot_logp (ax, fig, logp_function, points_surface, title):
     mesh = load_mesh()
     triangles = mesh.cells[0].data
 
@@ -204,7 +203,7 @@ def plot_logp (ax, logp_function, points_surface, title):
 
     # change to facecolor
     mappable = map_colors(trisurf, logp_function, cmap='viridis')
-    plt.colorbar(mappable, shrink=0.67, aspect=16.7)
+    fig.colorbar(mappable, ax=ax, shrink=0.67, aspect=16.7)
     ax.set_title(title)
     ax.set_xlabel('X')
     ax.set_ylabel('Y')

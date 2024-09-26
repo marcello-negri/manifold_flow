@@ -28,10 +28,11 @@ parser.add_argument("--logabs_jacobian", type=str, default="analytical_lu", choi
 parser.add_argument("--architecture", type=str, default="circular", choices=["circular", "ambient", "unbounded", "unbounded_circular"])
 parser.add_argument("--device", type=str, default="cuda", help='device for training the model')
 parser.add_argument("--learn_manifold", action="store_true", help="learn the manifold together with the density")
+parser.add_argument('--beta', type=float, default=1.0, help='p value of the lp norm')
 
 # DATASETS PARAMETERS
 parser.add_argument("--data_folder", type=str, default="/home/negri0001/Documents/Marcello/cond_flows/manifold_flow/imf/experiments/data")
-parser.add_argument("--dataset", type=str, default="uniform", choices=["vonmises_fisher","vonmises_fisher_mixture", "uniform", "uniform_checkerboard", "vonmises_fisher_mixture_spiral"])
+parser.add_argument("--dataset", type=str, default="uniform", choices=["vonmises_fisher","vonmises_fisher_mixture", "uniform", "lp_uniform", "uniform_checkerboard", "vonmises_fisher_mixture_spiral"])
 parser.add_argument('--datadim', metavar='d', type=int, default=3, help='number of dimensions')
 parser.add_argument('--epsilon', metavar='epsilon', type=float, default=0.1, help='std of the isotropic noise in the data')
 parser.add_argument('--n_samples_dataset', metavar='nsd', type=int, default=10_000, help='number of data points in the dataset')
@@ -138,19 +139,46 @@ def main():
     import pandas as pd
     import seaborn as sns
 
-    n_reps = 5
-    n_sums = 10
-    n_dims = 5
+    n_reps = 20
+    n_sums = 1
+    n_dims = 10
 
-    dimensions = np.linspace(10, 5000, n_dims, dtype='int')
+    # dimensions = np.logspace(2, 4, n_dims, dtype='int')
+    dimensions = np.linspace(10, 5_000, n_dims, dtype='int')
 
     np.random.seed(1234)
     torch.manual_seed(1234)
     # torch.set_default_dtype(torch.float64)
     # data_base = data_base.double()
-
+    # logabs_names = ["cholesky", "analytical_lu", "analytical_sm"]
+    logabs_names = ["cholesky", "analytical_gauss"]
+    # logabs_names = ["cholesky", "analytical_lu"]
+    # labels = ["cholesky", "ours(lu)", "ours(sm)"]
+    labels = ["cholesky", "ours"]
+    logabs_dict = dict(zip(logabs_names, labels))
     if os.path.isfile('results_runtime.csv'):
         runtime_df = pd.read_csv('results_runtime.csv')
+        results_ours = runtime_df[runtime_df["logabsdet"]=="ours"]
+        results_chol = runtime_df[runtime_df["logabsdet"]=="cholesky"]
+        runtime_ours = results_ours.groupby("datadim")["runtime"].mean().reset_index().to_numpy()
+        runtime_chol = results_chol.groupby("datadim")["runtime"].mean().reset_index().to_numpy()
+
+        plt.plot(runtime_ours[:,0], runtime_ours[:,1], marker=".", label="ours")
+        plt.plot(runtime_chol[:,0], runtime_chol[:,1], marker=".", label="chol")
+        # plt.xscale("log")
+        # plt.yscale("log")
+        plt.show()
+        plt.plot(runtime_ours[:, 0], runtime_ours[:, 1], marker=".", label="ours")
+        plt.plot(runtime_chol[:, 0], runtime_chol[:, 1], marker=".", label="chol")
+        plt.plot(runtime_ours[:, 0], 1e-10*(runtime_ours[:, 0])**2, label="quadratic")
+        plt.plot(runtime_ours[:, 0], 1e-10*(runtime_ours[:, 0])**3, label="cubic")
+        plt.xscale("log")
+        plt.yscale("log")
+        plt.show()
+        from scipy import stats
+        slope_ours, intercept_ours, _, _, _ = stats.linregress(np.log(runtime_ours[:, 0]), np.log(runtime_ours[:, 1]))
+        slope_chol, intercept_chol, _, _, _ = stats.linregress(np.log(runtime_ours[:, 0]), np.log(runtime_chol[:, 1]))
+        breakpoint()
     else:
         context=None
         results = []
@@ -158,12 +186,15 @@ def main():
         for dim in dimensions:
             args.datadim = int(dim)
             unif_sphere_dist = UniformSphere(shape=[args.datadim - 1])
-            data_base = unif_sphere_dist.sample(1)
-            data_base.requires_grad_(True)
+            # data_base = unif_sphere_dist.sample(1).to(args.device).requires_grad_(True)
+
+            data_base = unif_sphere_dist.sample(2).to(args.device)
+            # data_base = torch.rand_like(data_base).requires_grad_(True)*0.1
+            # data_base
             # data_base = torch.tensor(torch.rand((1, args.datadim - 1)), requires_grad=True).to('cuda')
             # data_base = data_base * 2 - 1
             # data_base[0, -1] *= 2
-            for logabs_jacobian in ["cholesky","analytical_sm","analytical_lu"]:
+            for logabs_jacobian in logabs_names:
                 args.logabs_jacobian = logabs_jacobian
                 print(args)
                 # build flow
@@ -173,24 +204,16 @@ def main():
                 for _ in tqdm.tqdm(range(n_reps)):
                     # torch.cuda.synchronize()
                     start_time = time.monotonic()
-                    for _ in range(n_sums):
-                        data_manifold, logabsdet = flow._transform.inverse(data_base, context)
-                        # import gc
-                        # print("="*100)
-                        # print(torch.cuda.memory_summary())
-                        # for obj in gc.get_objects():
-                        #     try:
-                        #         if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
-                        #             print(type(obj), obj.size())
-                        #     except:
-                        #         pass
+                    # torch.cuda.synchronize()
+                    data_manifold, logabsdet = flow._transform.inverse(data_base, context)
+                    # print(torch.cuda.memory_summary())
                     # torch.cuda.synchronize()
                     end_time = time.monotonic()
                     time_diff = timedelta(seconds=end_time - start_time)
                     time_diff_seconds= str(time_diff).split(":")[-1]
-                    print(time_diff)
+                    print("total time: ", time_diff)
 
-                    entry_dict = dict(datadim=dim, logabs_jacobian=logabs_jacobian, learn_manifold=args.learn_manifold,
+                    entry_dict = dict(datadim=dim, logabsdet=logabs_dict[logabs_jacobian], learn_manifold=args.learn_manifold,
                                       runtime=float(time_diff_seconds))
                     results.append(entry_dict)
 
@@ -204,7 +227,7 @@ def main():
         results_pd = pd.read_csv(f"results_{logabs_jacobian}_manifold.csv", header=None)
         results_pd = results_pd.drop(index=[i*n_per_dim for i in range(n_dims)]).reset_index(drop=True)
         results_pd.columns = ["runtime"]
-        results_pd["logabs_jacobian"] = logabs_jacobian
+        results_pd["logabsdet"] = logabs_jacobian
         results_pd["datadim"] = 0
         for i in range(n_dims):
             results_pd.loc[i * n_per_dim:(i + 1) * n_per_dim, 'datadim'] = dimensions[i]
@@ -212,7 +235,16 @@ def main():
         return results_pd
 
     plt.figure(figsize=(12, 5), dpi=80)
-    ax = sns.boxplot(x="datadim", y="runtime", hue="logabs_jacobian", data=runtime_df)  # RUN PLOT
+    ax = sns.boxplot(x="datadim", y="runtime", hue="logabsdet", data=runtime_df)  # RUN PLOT
+    plt.show()
+
+    plt.figure(figsize=(12, 5), dpi=80)
+    ax = sns.pointplot(x="datadim", y="runtime", hue="logabsdet", data=runtime_df, log_scale=True)  # RUN PLOT
+    # ax.set_xticks(ax.get_xticks()[::5])
+    # ax.set_xscale("log")
+    # ax.set_yscale("log")
+    # plt.xscale('log')
+    plt.savefig("../plots/runtime_comparison.pdf", dpi=300)
     plt.show()
 
     # results_cholesky_pd = load_results_csv("cholesky", dimensions=dimensions, n_sums=n_sums, n_reps=n_reps)
@@ -226,8 +258,6 @@ def main():
     # plt.figure(figsize=(12, 5), dpi=80)
     # ax = sns.boxplot(x="datadim", y="runtime", hue="logabs_jacobian", data=runtime_df)  # RUN PLOT
     # plt.show()
-
-    breakpoint()
 
 if __name__ == "__main__":
     main()

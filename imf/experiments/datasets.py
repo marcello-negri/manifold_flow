@@ -253,28 +253,71 @@ class UniformCheckerboard(Uniform):
 
         assert self.args.datadim == 3
         self.dataset_suffix += f"_nr{self.args.n_theta:d}_nc{self.args.n_phi:d}"
+        self.check_normalization_constant()
+        self._compute_normalization_const()
+
+    def check_normalization_constant(self):
+        norm_consts = []
+        range_samples = np.logspace(0, 8,20).astype("int")
+        for n in range_samples:
+            self._compute_normalization_const(n_samples=n)
+            norm_consts.append(self.log_norm_const.item())
+        import matplotlib.pyplot as plt
+        plt.plot(range_samples, norm_consts)
+        plt.xscale("log")
+        plt.show()
+
+    def _compute_normalization_const(self, n_samples=100_000):
+        # should only be called once at initialization
+        self.log_norm_const = 0.
+        uniform_samples = self.sample_uniform(n_samples)
+        log_uniform_samples = self.log_density(uniform_samples)
+        self.log_norm_const = torch.logsumexp(log_uniform_samples, dim=-1) - np.log(n_samples) + self.log_surface_area
 
     def sample(self, n_samples):
         # samples 3 times as much points to make sure at least 1/3 fall within the mask
         samples = torch.randn([n_samples * 3, self.args.datadim], device=self.args.device)
         samples /= torch.norm(samples, dim=1).reshape(-1, 1)
-        mask = self.checkerboard_mask(samples)
+        mask = self.checkerboard_mask(samples).detach().cpu().numpy()
         samples = samples[mask]
 
         assert samples.shape[0] > n_samples
 
         return samples[:n_samples]
 
-    def log_density(self, points):
-        logp = torch.ones(points.shape[0], device=self.args.device) * -10
-        mask = self.checkerboard_mask(points)
-        logp[mask] = -self.log_surface_area
+    def sample_uniform(self, n_samples):
+        samples = torch.randn([n_samples, self.args.datadim], device=self.args.device)
+        samples /= torch.norm(samples, dim=1).reshape(-1, 1)
 
-        return logp
+        return samples * self.args.radius
+
+    def log_density(self, points):
+        assert self.args.n_theta > 1 and self.args.n_phi > 1
+        assert self.args.n_phi % 2 == 0
+
+        points_sph = cartesian_to_spherical_torch(points)
+        logp = 2 * torch.sin(self.args.n_theta * points_sph[:, 1]) * torch.sin(self.args.n_theta * points_sph[:, 2])
+
+        return logp - self.log_norm_const
 
     def compute_log_surface(self):
         # density is defined on the mask only, which covers half of the surface area --> 2pi
-        self.log_surface_area = np.log(2*np.pi)
+        self.log_surface_area = np.log(4*np.pi)
+
+    def smooth_checkerboard_mask(self, points_cart):
+        assert self.args.n_theta > 1 and self.args.n_phi > 1
+        assert self.args.n_phi % 2 == 0
+
+        # idx_rotation = [2, 0, 1]
+        idx_rotation = [0, 1, 2]
+
+        rotated_points = points_cart[:, idx_rotation]
+        if isinstance(rotated_points, np.ndarray):
+            rotated_points = torch.from_numpy(rotated_points).to(points_cart.device).float()
+
+        points_sph = cartesian_to_spherical_torch(rotated_points)
+        mask = 2 * torch.sin(self.args.n_theta * points_sph[:, 1]) * torch.sin(self.args.n_theta * points_sph[:, 2])
+        return mask
 
     def checkerboard_mask(self, points_cart):
         assert self.args.n_theta > 1 and self.args.n_phi > 1
@@ -286,11 +329,10 @@ class UniformCheckerboard(Uniform):
 
         rotated_points = points_cart[:, idx_rotation]
         if isinstance(rotated_points, np.ndarray):
-            rotated_points = torch.from_numpy(rotated_points).float()
+            rotated_points = torch.from_numpy(rotated_points).to(points_cart.device).float()
 
-        points_sph = cartesian_to_spherical_torch(rotated_points).detach().cpu().numpy()
+        points_sph = cartesian_to_spherical_torch(rotated_points)
         mask = (points_sph[:, 1] // delta_theta + points_sph[:, 2] // delta_phi) % 2 == 0
-
         return mask
 
 class LpUniform(Uniform):

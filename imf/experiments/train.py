@@ -42,7 +42,7 @@ parser.add_argument('--mu', metavar='m', type=float, default=None, help='mean of
 parser.add_argument('--kappa', metavar='k', type=float, default=5.0, help='concentration parameter of von mises distribution')
 # von mises fisher mixture parameters
 parser.add_argument('--n_mix', metavar='nm', type=int, default=50, help='number of mixture components for mixture of von mises fisher distribution')
-parser.add_argument('--kappa_mix', metavar='km', type=float, default=50.0, help='concentration parameter of mixture of von mises distribution')
+parser.add_argument('--kappa_mix', metavar='km', type=float, default=30.0, help='concentration parameter of mixture of von mises distribution')
 parser.add_argument('--alpha_mix', metavar='am', type=float, default=0.3, help='alpha parameter of mixture of von mises distribution')
 parser.add_argument('--n_turns_spiral', metavar='ns', type=int, default=4, help='number of spiral turns for sphere spiral distribution')
 # uniform checkerboard parameters
@@ -67,12 +67,12 @@ def create_directories():
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
 
-def evaluate_prob(samples, logp_flow, dataset):
-    logp_gt = density_gt(points=samples, dataset=dataset)
-    MSE_logp = np.sqrt(np.square(np.exp(logp_flow) - logp_gt).mean())
+def evaluate_prob(samples, logp_flow, dataset, normalized_target=True):
+    p_gt = density_gt(points=samples, dataset=dataset)
+    norm_const_gt = 1. if normalized_target else p_gt.sum()
+    norm_const_flow = 1. if normalized_target else np.exp(p_gt).sum()
+    MSE_logp = np.sqrt(np.square(np.exp(logp_flow)/norm_const_flow - p_gt/norm_const_gt).mean())
     print(f"MSE prob: {MSE_logp:.5f}")
-    breakpoint()
-
     return MSE_logp
 
 
@@ -82,6 +82,9 @@ def main():
     create_directories()
 
     # torch.autograd.set_detect_anomaly(True)
+    spherical_datasets = ["uniform", "uniform_checkerboard", "vonmises_fisher",
+                          "vonmises_fisher_mixture", "vonmises_fisher_mixture_spiral"]
+    sphere = True if args.dataset in spherical_datasets else False
 
     # load dataset and samples
     dataset = create_dataset(args=args)
@@ -122,9 +125,9 @@ def main():
     # evaluate learnt distribution
     samples_flow, log_probs_flow = generate_samples(flow, args=args, sample_size=100, n_iter=10)
     n_samples = min(samples_flow.shape[0], train_data_np.shape[0])
-    MSE_prob = evaluate_prob(samples=samples_flow, logp_flow=log_probs_flow, dataset=dataset)
+    MSE_prob = evaluate_prob(samples=samples_flow, logp_flow=log_probs_flow, dataset=dataset, normalized_target=True)
     plot_icosphere(data=train_data_np[:n_samples], dataset=dataset, flow=flow, samples_flow=samples_flow[:n_samples],
-                   rnf=None, samples_rnf=None, device='cuda', args=args, plot_rnf=False, not_sphere=True)
+                   rnf=None, samples_rnf=None, device='cuda', args=args, plot_rnf=False, sphere=sphere)
     if args.dataset == "uniform":
         plot_pairwise_angle_distribution(samples_flow, n_samples=1000)
     plot_angle_distribution(samples_flow=samples_flow, samples_gt=train_data_np, device=args.device)

@@ -99,12 +99,12 @@ def main():
     args.likelihood_cond = False
     # train model
     flow.train()
-    flow, loss = train_model_reverse(model=flow, args=args, dataset=dataset, batch_size=100)
+    flow, loss = train_model_reverse(model=flow, args=args, dataset=dataset, batch_size=1000)
     plot_loss(loss)
 
     # evaluate model
     flow.eval()
-    samples, logprob_flow = flow.sample_and_log_prob(num_samples=100, context=None)
+    samples, logprob_flow = flow.sample_and_log_prob(num_samples=1000, context=None)
     # logprob_target = dataset.log_density(samples)  # uniform on lp manifold
     log_surface = torch.mean(-logprob_flow)
     if args.dataset == "uniform":
