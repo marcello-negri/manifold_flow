@@ -7,7 +7,7 @@ import argparse
 from imf.experiments.utils_manifold import train_model_forward, train_model_reverse, generate_samples
 from imf.experiments.utils_manifold import  define_model_name
 from imf.experiments.architecture import build_flow_forward, build_flow_reverse
-from imf.experiments.plots import plot_icosphere, plot_loss, plot_samples, plot_pairwise_angle_distribution, plot_angle_distribution, plot_samples_pca, density_gt
+from imf.experiments.plots import plot_icosphere, plot_loss, plot_samples, plot_3Dmanifold, plot_pairwise_angle_distribution, plot_angle_distribution, plot_samples_pca, density_gt
 from imf.experiments.datasets import create_dataset
 
 import logging
@@ -22,7 +22,7 @@ parser.add_argument('--seed', metavar='s', type=int, default=1234, help='random 
 parser.add_argument("--overwrite", action="store_true", help="re-train and overwrite flow model")
 parser.add_argument("--n_layers", metavar='nl', type=int, default=10, help='number of layers in the flow model')
 parser.add_argument("--n_hidden_features", metavar='nf', type=int, default=256, help='number of hidden features in the embedding space of the flow model')
-parser.add_argument("--logabs_jacobian", type=str, default="analytical_lu", choices=["analytical_sm", "cholesky", "analytical_lu"])
+parser.add_argument("--logabs_jacobian", type=str, default="analytical_lu", choices=["analytical_sm", "cholesky", "analytical_lu", "analytical_block", "fff", "rect"])
 parser.add_argument("--architecture", type=str, default="circular", choices=["circular", "ambient", "unbounded", "unbounded_circular"])
 parser.add_argument("--device", type=str, default="cuda", help='device for training the model')
 parser.add_argument("--learn_manifold", action="store_true", help="learn the manifold together with the density")
@@ -30,10 +30,12 @@ parser.add_argument("--kl_div", type=str, default="forward", choices=["forward",
 parser.add_argument('--T0', metavar='T0', type=float, default=2., help='initial temperature')
 parser.add_argument('--Tn', metavar='Tn', type=float, default=1, help='final temperature')
 parser.add_argument('--iter_per_cool_step', metavar='ics', type=int, default=50, help='iterations per cooling step in simulated annealing')
+parser.add_argument('--manifold_type', metavar='ics', type=int, default=1, help='deformed sphere manifold type', choices=[0,1,2,3,4,5])
+
 
 # DATASETS PARAMETERS
 parser.add_argument("--data_folder", type=str, default="/home/negri0001/Documents/Marcello/cond_flows/manifold_flow/imf/experiments/data")
-parser.add_argument("--dataset", type=str, default="uniform", choices=["vonmises_fisher", "vonmises_fisher_mixture", "uniform", "uniform_checkerboard", "vonmises_fisher_mixture_spiral", "lp_uniform"])
+parser.add_argument("--dataset", type=str, default="uniform", choices=["vonmises_fisher", "vonmises_fisher_mixture", "uniform", "uniform_checkerboard", "vonmises_fisher_mixture_spiral", "lp_uniform", "deformed_sphere1"])
 parser.add_argument('--datadim', metavar='d', type=int, default=3, help='number of dimensions')
 parser.add_argument('--epsilon', metavar='epsilon', type=float, default=0.00, help='std of the isotropic noise in the data')
 parser.add_argument('--n_samples_dataset', metavar='nsd', type=int, default=10_000, help='number of data points in the dataset')
@@ -69,12 +71,18 @@ def create_directories():
 
 def evaluate_prob(samples, logp_flow, dataset, normalized_target=True):
     p_gt = density_gt(points=samples, dataset=dataset)
-    norm_const_gt = 1. if normalized_target else p_gt.sum()
-    norm_const_flow = 1. if normalized_target else np.exp(p_gt).sum()
-    MSE_logp = np.sqrt(np.square(np.exp(logp_flow)/norm_const_flow - p_gt/norm_const_gt).mean())
+    # norm_const_gt = 1. if normalized_target else p_gt.sum()
+    # norm_const_flow = 1. if normalized_target else np.exp(p_gt).sum()
+    # Compute the L2 norm for both distributions
+    # MSE_logp = np.sqrt(np.square(np.exp(logp_flow)/norm_const_flow - p_gt/norm_const_gt).mean())
+
+    if normalized_target:
+        MSE_logp = np.sqrt(np.square(np.exp(logp_flow) - p_gt).mean())
+    else:
+        avg_diff = np.mean(np.exp(logp_flow) - p_gt)
+        MSE_logp = np.sqrt(np.square(np.exp(logp_flow) - p_gt/(-avg_diff-1)).mean())
     print(f"MSE prob: {MSE_logp:.5f}")
     return MSE_logp
-
 
 def main():
     # set random seed for reproducibility
@@ -97,9 +105,9 @@ def main():
 
     # build flow
     if args.kl_div == "forward":
-        flow = build_flow_forward(args)
+        flow = build_flow_forward(args)#, clamp_theta=5e-2)
     elif args.kl_div == "reverse":
-        flow = build_flow_reverse(args)
+        flow = build_flow_reverse(args)#,clamp_theta=5e-2)
     define_model_name(args, dataset)
 
     print(args)
@@ -123,15 +131,15 @@ def main():
         flow.eval()
 
     # evaluate learnt distribution
-    samples_flow, log_probs_flow = generate_samples(flow, args=args, sample_size=100, n_iter=10)
+    samples_flow, log_probs_flow = generate_samples(flow, args=args, sample_size=1000, n_iter=10)
+    breakpoint()
     n_samples = min(samples_flow.shape[0], train_data_np.shape[0])
-    MSE_prob = evaluate_prob(samples=samples_flow, logp_flow=log_probs_flow, dataset=dataset, normalized_target=True)
+    MSE_prob = evaluate_prob(samples=samples_flow, logp_flow=log_probs_flow, dataset=dataset, normalized_target=False)
+    # plot_3Dmanifold(dataset, flow, args=args)
+    plot_samples(samples_flow)
     plot_icosphere(data=train_data_np[:n_samples], dataset=dataset, flow=flow, samples_flow=samples_flow[:n_samples],
                    rnf=None, samples_rnf=None, device='cuda', args=args, plot_rnf=False, sphere=sphere)
-    if args.dataset == "uniform":
-        plot_pairwise_angle_distribution(samples_flow, n_samples=1000)
-    plot_angle_distribution(samples_flow=samples_flow, samples_gt=train_data_np, device=args.device)
-    plot_samples_pca(samples_flow, train_data_np)
+
 
 if __name__ == "__main__":
     main()

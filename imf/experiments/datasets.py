@@ -246,7 +246,6 @@ class HyperSurface3(HyperSurface):
         return x**2 - y**2 - 0.5 * x
 
 
-
 class UniformCheckerboard(Uniform):
     def __init__(self, args):
         super().__init__(args)
@@ -387,6 +386,110 @@ class LpUniform(Uniform):
 
         return r.unsqueeze(-1)
 
+
+class DeformedSphereDataset1(Uniform):
+    def __init__(self, args):
+        super().__init__(args)
+
+        assert self.args.datadim == 3
+        self.dataset_suffix += f"_dataset1_manifold_type{self.args.manifold_type:d}"
+
+        self.check_normalization_constant()
+        self._compute_normalization_const()
+
+    def check_normalization_constant(self):
+        norm_consts = []
+        range_samples = np.logspace(0, 8,20).astype("int")
+        for n in range_samples:
+            self._compute_normalization_const(n_samples=n)
+            norm_consts.append(self.log_norm_const.item())
+        import matplotlib.pyplot as plt
+        plt.plot(range_samples, norm_consts)
+        plt.xscale("log")
+        plt.show()
+
+    def _compute_normalization_const(self, n_samples=100_000):
+        # should only be called once at initialization
+        self.log_norm_const = 0.
+        uniform_samples = self.sample_uniform(n_samples)
+        log_uniform_samples = self.log_density(uniform_samples)
+        self.log_norm_const = torch.logsumexp(log_uniform_samples, dim=-1) - np.log(n_samples) + self.log_surface_area
+
+    def sample_uniform(self, n_samples):
+        samples = torch.randn([n_samples, self.args.datadim], device=self.args.device)
+        samples /= torch.norm(samples, dim=1).reshape(-1, 1)
+
+        return samples * self.args.radius
+
+    def log_density(self, points):
+        # idx_rotation = [2, 0, 1]
+        points_sph = cartesian_to_spherical_torch(points)#[:, idx_rotation])
+
+        # logp = 2 * torch.sin(3*points_sph[:, 1]) * torch.sin(3*points_sph[:, 2])
+
+        # logp = torch.sin(points_sph[:, 1]) * torch.sin(points_sph[:, 2])
+        if self.args.manifold_type == 2:
+            logp = 0.5*torch.sin(3*points_sph[:, 2]) - self.log_norm_const# * torch.sin(6*points_sph[:, 2])
+        if self.args.manifold_type == 4:
+            logp = torch.exp(torch.sin(4*points_sph[:, 1]) * torch.sin(4*points_sph[:, 2]))
+        if self.args.manifold_type == 0:
+            logp = 3 * torch.sin(points_sph[:, 1]) * torch.sin(points_sph[:, 2])
+        # logp = torch.exp(torch.sin(4*points_sph[:, 1]) * torch.sin(4*points_sph[:, 2]))
+        logp = torch.ones(points.shape[0], device=self.args.device)
+        return logp
+        # return logp
+
+    def r_given_theta(self, angles):
+        assert angles.shape[-1] == 2
+        theta = angles[:,:1]
+        phi = angles[:,1:2]
+        r = theta.new_ones(theta.shape[0], 1) * self.args.radius
+        # r = self.network(theta)
+        match self.args.manifold_type:
+            case 0:
+                # ellipsoid
+                a, b, c, = 1, 0.9, 0.8
+                r = 1. / torch.sqrt(
+                    ((torch.cos(phi) / a) ** 2 + (torch.sin(phi) / b) ** 2) * torch.sin(theta) ** 2 + (
+                                torch.cos(theta) / c) ** 2)
+            case 1:
+                # heart-like
+                r = 1 + 0.05 * torch.sin(5 * theta) ** 2 + 0.2 * torch.sin(theta) * torch.abs(torch.sin(phi)) * torch.cos(phi)
+            case 2:
+                # weird oscillations
+                r = 0.6 + 0.05 * torch.sin(5 * theta) ** 2 + 0.05 * torch.sin(3 * theta) * torch.sin(2 * phi)
+            case 3:
+                # ridge squash
+                focus_equator = 5
+                num_ridges = 6
+                focus_ridges = 3
+                r = 0.6 + 0.5 * torch.exp(- focus_equator * (1.0 - torch.sin(theta))) + 0.3 * torch.sin(
+                    num_ridges * phi) * torch.exp(
+                    - focus_ridges * (1.0 - torch.sin(theta)))
+            case 4:
+                # spirals
+                spiral_speed = 3
+                num_spirals = 3  # this times 2
+                spiral_power = 2
+                focus_equator = 2
+                amplitude = 0.15
+                r = 1.0 + amplitude * torch.exp(- focus_equator * (1.0 - torch.sin(theta))) * torch.sin(
+                    num_spirals * phi + spiral_speed * theta) ** spiral_power
+            case 5:
+                # spiral spikes
+                spiral_speed = 5
+                num_spirals = 4  # this times 2
+                spiral_power = 2
+                focus_equator = 3
+                spike_separation = 7  # this number of spikes per spiral. should be odd
+                spike_power = 1.0
+                amplitude = 0.4
+                r = 1.0 + amplitude * torch.exp(- focus_equator * (1.0 - torch.sin(theta))) * torch.abs(
+                    torch.sin(spike_separation * theta)) ** spike_power * torch.sin(
+                    num_spirals * phi + spiral_speed * theta) ** spiral_power
+
+        return r
+
 def create_dataset(args):
     if args.dataset == 'uniform':
         dataset = Uniform(args)
@@ -408,6 +511,8 @@ def create_dataset(args):
         dataset = VonMisesFisherMixtureSpiral(args)
     elif args.dataset == 'vonmises_fisher':
         dataset = VonMisesFisher(args)
+    elif args.dataset == 'deformed_sphere1':
+        dataset = DeformedSphereDataset1(args)
     else:
         raise ValueError('Dataset {} not recognized'.format(args.dataset))
 
@@ -505,3 +610,4 @@ def generate_regression_dataset_positive_coeff(n_samples, n_features, n_non_zero
     print(f"Norm coefficients: {np.linalg.norm(reg.coef_):.4f}")
 
     return X, y, coefficients
+

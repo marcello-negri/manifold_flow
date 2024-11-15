@@ -110,7 +110,6 @@ def train_model_forward(model, data, args, batch_size=1, context=None, alternati
                 # data_manifold_, logabsdet_ = model._transform.inverse(data_base_, context)
                 # log_prob_ = log_prob_ - logabsdet_
                 log_prob = model.log_prob(data_manifold, context=context)
-                # breakpoint()
                 # q_samples, q_log_prob = model.sample_and_log_prob(num_samples=sample_size)
                 if torch.any(torch.isnan(log_prob)): breakpoint()
                 if torch.any(torch.isnan(data_manifold)): breakpoint()

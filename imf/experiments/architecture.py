@@ -18,7 +18,7 @@ from enflows.transforms.base import CompositeTransform, InverseTransform
 from enflows.nn.nets import Sin
 from enflows.flows.base import Flow
 from enflows.transforms.lipschitz import LipschitzDenseNetBuilder, iResBlock
-from enflows.transforms.injective import (ConstrainedAnglesSigmoid, ClampedTheta, ClampedAngles, LearnableManifoldFlow, LearnableParamHyperFlow,
+from enflows.transforms.injective import (ConstrainedAnglesSigmoid, ClampedTheta, DeformedSphereFlow, LearnableManifoldFlow, LearnableParamHyperFlow,
                                           SphereFlow, LpManifoldFlow, ScaleLastDim, ResidualNetInput, CondLpManifoldFlow, PositiveL1ManifoldFlow,)
 from enflows.transforms.linear import ScalarScale, ScalarShift
 from enflows.transforms.svd import SVDLinear
@@ -82,7 +82,7 @@ def build_paramhyper_flow_forward_(args):
 
     return flow
 
-def build_flow_forward(args, clamp_theta=False):
+def build_flow_forward(args, clamp_theta=None):
     transformation_layers = []
 
     if args.learn_manifold:
@@ -91,12 +91,13 @@ def build_flow_forward(args, clamp_theta=False):
         if args.dataset == "lp_uniform":
             manifold_mapping = LpManifoldFlow(norm=1, p=args.beta, logabs_jacobian=args.logabs_jacobian)
         else:
+            # manifold_mapping = DeformedSphereFlow(r=1., logabs_jacobian=args.logabs_jacobian, manifold_type=args.manifold_type)
             manifold_mapping = SphereFlow(n=args.datadim - 1, r=1., logabs_jacobian=args.logabs_jacobian)
 
     transformation_layers.append(manifold_mapping)
 
-    if clamp_theta:
-        transformation_layers.append(ClampedTheta(eps=1e-3))
+    if clamp_theta is not None:
+        transformation_layers.append(ClampedTheta(eps=clamp_theta))
 
     params = dict(flow_dim=args.datadim, n_layers=args.n_layers, hidden_features=args.n_hidden_features, device=args.device)
     if args.architecture == 'circular':
@@ -123,7 +124,7 @@ def build_flow_forward(args, clamp_theta=False):
 
 RADIUS_CONST = 1.64
 
-def build_flow_reverse(args, clamp_theta=False):
+def build_flow_reverse(args, clamp_theta=None):
     params = dict(flow_dim=args.datadim, n_layers=args.n_layers, hidden_features=args.n_hidden_features, device=args.device)
     if args.architecture == 'circular':
         base_dist, transformation_layers = build_flow_circular_rvs(**params)
@@ -140,8 +141,8 @@ def build_flow_reverse(args, clamp_theta=False):
     else:
         raise ValueError(f'type {type} is not supported')
 
-    if clamp_theta:
-        transformation_layers.append(ClampedTheta(eps=1e-3))
+    if clamp_theta is not None:
+        transformation_layers.append(ClampedTheta(eps=clamp_theta))
 
     if args.learn_manifold:
         manifold_mapping = LearnableManifoldFlow(n=args.datadim - 1, max_radius=2., logabs_jacobian=args.logabs_jacobian)
@@ -157,6 +158,8 @@ def build_flow_reverse(args, clamp_theta=False):
                 warnings.warn("The logabsdet of the Jacobian for the LpManifold can become unstable "
                               "it the base distribution is not UniformSphere()")
                 manifold_mapping = LpManifoldFlow(norm=1., p=args.beta, logabs_jacobian=args.logabs_jacobian)
+        elif args.dataset in ["deformed_sphere1"]:
+            manifold_mapping = DeformedSphereFlow(r=1., logabs_jacobian=args.logabs_jacobian, manifold_type=args.manifold_type)
         else:
             # manifold_mapping = SphereFlow(n=args.datadim - 1, r=RADIUS_CONST, logabs_jacobian=args.logabs_jacobian)
             manifold_mapping = SphereFlow(n=args.datadim - 1, r=1, logabs_jacobian=args.logabs_jacobian)
@@ -193,7 +196,7 @@ def build_flow_circular_fwd(flow_dim, n_layers=3, hidden_features=256, device='c
             InverseTransform(
                 CircularAutoregressiveRationalQuadraticSpline(num_input_channels=flow_dim - 1,
                                                               num_hidden_channels=hidden_features,
-                                                              num_blocks=3, num_bins=5, tail_bound=1,
+                                                              num_blocks=3, num_bins=20, tail_bound=1,
                                                               ind_circ=[i for i in range(flow_dim - 1)])
             )
         )
@@ -206,9 +209,10 @@ def build_flow_circular_fwd(flow_dim, n_layers=3, hidden_features=256, device='c
         #     )
         # )
 
+    epsilon = 1e-3
     transformation_layers.append(
         CompositeTransform([
-            ScalarScale(scale=1 - 1e-3, trainable=False, eps=0),
+            ScalarScale(scale=1 - epsilon, trainable=False, eps=0),
             ScalarShift(shift=1., trainable=False),
             ScalarScale(scale=0.5 * np.pi, trainable=False),
             ScaleLastDim(scale=2)
@@ -243,21 +247,21 @@ def build_flow_circular_rvs(flow_dim, n_layers=3, hidden_features=256, device='c
 
     for _ in range(n_layers):
         # transformation_layers.append(RandomPermutation(features=flow_dim - 1))
-        # transformation_layers.append(
-        #         CircularAutoregressiveRationalQuadraticSpline(num_input_channels=flow_dim - 1,
-        #                                                       num_hidden_channels=hidden_features,
-        #                                                       num_blocks=5, num_bins=10, tail_bound=1,
-        #                                                       ind_circ=[i for i in range(flow_dim - 1)])
-        # )
         transformation_layers.append(
-            # InverseTransform(
-                CircularCoupledRationalQuadraticSpline(num_input_channels=flow_dim - 1,
-                                                       num_hidden_channels=hidden_features,
-                                                       num_blocks=5, num_bins=10, tail_bound=1,
-                                                       ind_circ=[i for i in range(flow_dim - 1)])
-            # )
-
+                CircularAutoregressiveRationalQuadraticSpline(num_input_channels=flow_dim - 1,
+                                                              num_hidden_channels=hidden_features,
+                                                              num_blocks=5, num_bins=10, tail_bound=1,
+                                                              ind_circ=[i for i in range(flow_dim - 1)])
         )
+        # transformation_layers.append(
+        #     # InverseTransform(
+        #         CircularCoupledRationalQuadraticSpline(num_input_channels=flow_dim - 1,
+        #                                                num_hidden_channels=hidden_features,
+        #                                                num_blocks=5, num_bins=10, tail_bound=1,
+        #                                                ind_circ=[i for i in range(flow_dim - 1)])
+        #     # )
+        #
+        # )
 
     transformation_layers.append(
         InverseTransform(
@@ -309,7 +313,7 @@ def build_flow_unbounded_fwd(flow_dim, n_layers=3, hidden_features=256, device='
         # transformation_layers.append(SVDLinear(features= flow_dim - 1, num_householder=4))
 
         transformation_layers.append(
-          MaskedSumOfSigmoidsTransform(features=flow_dim-1, hidden_features=hidden_features, num_blocks=3, n_sigmoids=30)
+          MaskedSumOfSigmoidsTransform(features=flow_dim-1, hidden_features=hidden_features, num_blocks=3, n_sigmoids=10)
         )
 
         # transformation_layers.append(iResBlock(densenet_builder.build_network(), brute_force=True))

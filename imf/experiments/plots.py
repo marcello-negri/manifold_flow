@@ -102,6 +102,71 @@ def plot_icosphere(data, dataset, flow, samples_flow, rnf, samples_rnf, kde=Fals
     plt.savefig(f"./plots/density_plot_{(args.model_name).split('/')[-1]}.pdf", dpi=300)
     plt.show()
 
+
+def plot_logp3d (ax, fig, logp_function, points_surface, title):
+
+    trisurf = ax.plot_trisurf(points_surface[:, 0], points_surface[:, 1], points_surface[:, 2])
+
+    # change to facecolor
+    mappable = map_colors(trisurf, logp_function, cmap='viridis')
+    fig.colorbar(mappable, ax=ax, shrink=0.67, aspect=16.7)
+    ax.set_title(title)
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_zlabel('Z')
+    ax.set_box_aspect([1, 1, 1])
+    ax.set_xlim(-1, 1)
+    ax.set_ylim(-1, 1)
+    ax.set_zlim(-1, 1)
+
+def plot_3Dmanifold(dataset, flow, args=None):
+    # load regular grid in spherical coordinates
+    n_points = 200
+    theta = np.linspace(0, np.pi, n_points)
+    phi = np.linspace(0, 2 * np.pi, n_points)
+
+    Theta, Phi = np.meshgrid(theta, phi)
+    sph_points = np.column_stack((Theta.ravel(), Phi.ravel()))
+    sph_points_torch = torch.from_numpy(sph_points).to("cuda").float()
+    R_ = dataset.r_given_theta(sph_points_torch).detach().cpu().numpy().reshape(Theta.shape)
+    X_ = R_ * np.sin(Theta) * np.cos(Phi)
+    Y_ = R_ * np.sin(Theta) * np.sin(Phi)
+    Z_ = R_ * np.cos(Theta)
+    cart_points = np.column_stack((X_.ravel(), Y_.ravel(), Z_.ravel()))
+    cart_points_torch = torch.from_numpy(cart_points).to("cuda").float()
+
+    p_gt = np.exp(dataset.log_density(cart_points_torch).detach().cpu().numpy())
+    # p_gt = (p_gt - np.min(p_gt)) / (np.max(p_gt) - np.min(p_gt))
+    p_flow = density_flow(cart_points, flow, args, batch_size=1000, device="cuda")
+    # p_flow = (p_flow - np.min(p_flow)) / (np.max(p_flow) - np.min(p_flow))
+
+    # Show plot
+    plt.show()
+    fig = plt.figure(figsize=(15, 15))
+    ax1 = fig.add_subplot(121, projection='3d')
+    ax2 = fig.add_subplot(122, projection='3d')
+    from matplotlib.colors import Normalize, LogNorm
+    norm = Normalize()
+    # norm = LogNorm()
+    surf1 = ax1.plot_surface(X_, Y_, Z_, facecolors=plt.cm.viridis(norm(p_gt.reshape(Theta.shape))), rstride=1, cstride=1, linewidth=0, antialiased=False)
+    norm = Normalize()
+    # norm = LogNorm()
+    surf2 = ax2.plot_surface(X_, Y_, Z_, facecolors=plt.cm.viridis(norm(p_flow.reshape(Theta.shape))), rstride=1,
+                             cstride=1, linewidth=0, antialiased=False)
+    ax1.set_aspect('equal', adjustable='box')
+    ax2.set_aspect('equal', adjustable='box')
+    a, b = -1, 1
+    ax1.set_xlim3d(left=a, right=b)
+    ax1.set_ylim3d(bottom=a, top=b)
+    ax1.set_zlim3d(bottom=a, top=b)
+    ax2.set_xlim3d(left=a, right=b)
+    ax2.set_ylim3d(bottom=a, top=b)
+    ax2.set_zlim3d(bottom=a, top=b)
+    plt.savefig(f"./plots/density_plot_{(args.model_name).split('/')[-1]}.pdf", dpi=300)
+    # plt.colorbar(surf1, ax=ax1)
+    plt.show()
+
+
 def map_colors(p3dc, func, kde=False, cmap='viridis', inpute_nans=True):
     """
     function taken from: https://stackoverflow.com/questions/63298864/plot-trisurface-with-custom-color-array
@@ -135,7 +200,7 @@ def map_colors(p3dc, func, kde=False, cmap='viridis', inpute_nans=True):
 
     # usual stuff
     norm = Normalize()#vmin=0, vmax=1)
-    # norm = Normalize(vmin=0.065, vmax=0.10)
+    # norm = Normalize(vmin=0.0, vmax=0.45)
     # norm = LogNorm()#vmin=0, vmax=1)
     colors = get_cmap(cmap)(norm(values))
     # set the face colors of the Poly3DCollection
@@ -212,6 +277,7 @@ def plot_logp (ax, fig, logp_function, points_surface, title):
     ax.set_xlim(-1, 1)
     ax.set_ylim(-1, 1)
     ax.set_zlim(-1, 1)
+    # ax.set_xticks([])
 
 def plot_samples_ax(ax, samples, title):
     ax.scatter(samples[:, 0], samples[:, 1], samples[:, 2], marker=".", alpha=0.2)

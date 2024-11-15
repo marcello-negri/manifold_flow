@@ -24,7 +24,7 @@ parser.add_argument("--overwrite", action="store_true", help="re-train and overw
 parser.add_argument("--n_layers", metavar='nl', type=int, default=10, help='number of layers in the flow model')
 parser.add_argument("--n_hidden_features", metavar='nf', type=int, default=256, help='number of hidden features in the embedding space of the flow model')
 # parser.add_argument("--bruteforce", action="store_true", help="compute the rectangular jacobian term bruteforce")
-parser.add_argument("--logabs_jacobian", type=str, default="analytical_lu", choices=["analytical_sm", "analytical_lu", "cholesky"])
+parser.add_argument("--logabs_jacobian", type=str, default="analytical_lu", choices=["analytical_sm", "analytical_lu", "cholesky", "fff", "rect"])
 parser.add_argument("--architecture", type=str, default="circular", choices=["circular", "ambient", "unbounded", "unbounded_circular"])
 parser.add_argument("--device", type=str, default="cuda", help='device for training the model')
 parser.add_argument("--learn_manifold", action="store_true", help="learn the manifold together with the density")
@@ -138,46 +138,44 @@ def main():
     import tqdm
     import pandas as pd
     import seaborn as sns
-
+    torch.autograd.set_detect_anomaly(True)
     n_reps = 20
     n_sums = 1
     n_dims = 10
 
-    # dimensions = np.logspace(2, 4, n_dims, dtype='int')
-    dimensions = np.linspace(10, 5_000, n_dims, dtype='int')
+    # dimensions = np.logspace(3, 4.1, n_dims, dtype='int')
+    dimensions = np.linspace(3000, 12000, n_dims, dtype='int')
 
     np.random.seed(1234)
     torch.manual_seed(1234)
     # torch.set_default_dtype(torch.float64)
     # data_base = data_base.double()
     # logabs_names = ["cholesky", "analytical_lu", "analytical_sm"]
-    logabs_names = ["cholesky", "analytical_gauss"]
-    # logabs_names = ["cholesky", "analytical_lu"]
+    # logabs_names = ["cholesky", "analytical_gauss"]
+    logabs_names = ["cholesky", "analytical_lu", "analytical_block", "approx"]
     # labels = ["cholesky", "ours(lu)", "ours(sm)"]
-    labels = ["cholesky", "ours"]
+    labels = ["cholesky", "ours_lu", "ours_block", "approx"]
     logabs_dict = dict(zip(logabs_names, labels))
     if os.path.isfile('results_runtime.csv'):
         runtime_df = pd.read_csv('results_runtime.csv')
-        results_ours = runtime_df[runtime_df["logabsdet"]=="ours"]
-        results_chol = runtime_df[runtime_df["logabsdet"]=="cholesky"]
-        runtime_ours = results_ours.groupby("datadim")["runtime"].mean().reset_index().to_numpy()
-        runtime_chol = results_chol.groupby("datadim")["runtime"].mean().reset_index().to_numpy()
-
-        plt.plot(runtime_ours[:,0], runtime_ours[:,1], marker=".", label="ours")
-        plt.plot(runtime_chol[:,0], runtime_chol[:,1], marker=".", label="chol")
-        # plt.xscale("log")
-        # plt.yscale("log")
+        for key in logabs_dict.keys():
+            label = logabs_dict[key]
+            runtime = runtime_df[runtime_df["logabsdet"]==label].groupby("datadim")["runtime"].mean().reset_index().to_numpy()
+            plt.plot(runtime[:, 0], runtime[:, 1], marker=".", label=label)
+        plt.legend()
         plt.show()
-        plt.plot(runtime_ours[:, 0], runtime_ours[:, 1], marker=".", label="ours")
-        plt.plot(runtime_chol[:, 0], runtime_chol[:, 1], marker=".", label="chol")
-        plt.plot(runtime_ours[:, 0], 1e-10*(runtime_ours[:, 0])**2, label="quadratic")
-        plt.plot(runtime_ours[:, 0], 1e-10*(runtime_ours[:, 0])**3, label="cubic")
+
+        from scipy import stats
+        for key in logabs_dict.keys():
+            label = logabs_dict[key]
+            runtime = runtime_df[runtime_df["logabsdet"]==label].groupby("datadim")["runtime"].mean().reset_index().to_numpy()
+            plt.plot(runtime[:, 0], runtime[:, 1], marker=".", label=label)
+            slope, intercept, _, _, _ = stats.linregress(np.log(runtime[:, 0]), np.log(runtime[:, 1]))
+            print(f"{key} slope:{slope:.3f} and intercept:{intercept:.3f}")
         plt.xscale("log")
         plt.yscale("log")
+        plt.legend()
         plt.show()
-        from scipy import stats
-        slope_ours, intercept_ours, _, _, _ = stats.linregress(np.log(runtime_ours[:, 0]), np.log(runtime_ours[:, 1]))
-        slope_chol, intercept_chol, _, _, _ = stats.linregress(np.log(runtime_ours[:, 0]), np.log(runtime_chol[:, 1]))
         breakpoint()
     else:
         context=None
@@ -185,10 +183,12 @@ def main():
         # args.learn_manifold = True
         for dim in dimensions:
             args.datadim = int(dim)
-            unif_sphere_dist = UniformSphere(shape=[args.datadim - 1])
+            input_data = torch.tensor(torch.rand((1, args.datadim)), requires_grad=True).to('cuda')
+            input_data_norm = input_data / input_data.norm()
+            # unif_sphere_dist = UniformSphere(shape=[args.datadim - 1])
             # data_base = unif_sphere_dist.sample(1).to(args.device).requires_grad_(True)
 
-            data_base = unif_sphere_dist.sample(2).to(args.device)
+            # data_base = unif_sphere_dist.sample(1).to(args.device)
             # data_base = torch.rand_like(data_base).requires_grad_(True)*0.1
             # data_base
             # data_base = torch.tensor(torch.rand((1, args.datadim - 1)), requires_grad=True).to('cuda')
@@ -198,16 +198,19 @@ def main():
                 args.logabs_jacobian = logabs_jacobian
                 print(args)
                 # build flow
-                flow = build_minimal_flow_forward(args)
-                data_manifold, logabsdet = flow._transform.inverse(data_base, context)
-
+                # flow = build_minimal_flow_forward(args)
+                # data_manifold, logabsdet = flow._transform.inverse(data_base, context)
+                manifold_mapping = LearnableManifoldFlow(n=args.datadim - 1, max_radius=2., logabs_jacobian=args.logabs_jacobian).to(args.device)
+                manifold_mapping.forward(input_data_norm)
                 for _ in tqdm.tqdm(range(n_reps)):
-                    # torch.cuda.synchronize()
+                    torch.cuda.synchronize()
                     start_time = time.monotonic()
                     # torch.cuda.synchronize()
-                    data_manifold, logabsdet = flow._transform.inverse(data_base, context)
+                    # data_manifold, logabsdet = flow._transform.inverse(data_base, context)
+                    # manifold_mapping.inverse(data_base)
+                    output, logabsdet = manifold_mapping.forward(input_data_norm)
                     # print(torch.cuda.memory_summary())
-                    # torch.cuda.synchronize()
+                    torch.cuda.synchronize()
                     end_time = time.monotonic()
                     time_diff = timedelta(seconds=end_time - start_time)
                     time_diff_seconds= str(time_diff).split(":")[-1]
@@ -236,6 +239,7 @@ def main():
 
     plt.figure(figsize=(12, 5), dpi=80)
     ax = sns.boxplot(x="datadim", y="runtime", hue="logabsdet", data=runtime_df)  # RUN PLOT
+    ax.legend()
     plt.show()
 
     plt.figure(figsize=(12, 5), dpi=80)
@@ -244,6 +248,7 @@ def main():
     # ax.set_xscale("log")
     # ax.set_yscale("log")
     # plt.xscale('log')
+    ax.legend()
     plt.savefig("../plots/runtime_comparison.pdf", dpi=300)
     plt.show()
 
