@@ -149,7 +149,7 @@ def plot_3Dmanifold(dataset, flow, args=None):
     norm = Normalize()
     # norm = LogNorm()
     surf1 = ax1.plot_surface(X_, Y_, Z_, facecolors=plt.cm.viridis(norm(p_gt.reshape(Theta.shape))), rstride=1, cstride=1, linewidth=0, antialiased=False)
-    norm = Normalize()
+    norm = Normalize(0.,0.35)
     # norm = LogNorm()
     surf2 = ax2.plot_surface(X_, Y_, Z_, facecolors=plt.cm.viridis(norm(p_flow.reshape(Theta.shape))), rstride=1,
                              cstride=1, linewidth=0, antialiased=False)
@@ -159,11 +159,18 @@ def plot_3Dmanifold(dataset, flow, args=None):
     ax1.set_xlim3d(left=a, right=b)
     ax1.set_ylim3d(bottom=a, top=b)
     ax1.set_zlim3d(bottom=a, top=b)
+    ax1.set_xticks(np.linspace(X_.min(), X_.max(), 5))
+    ax1.set_yticks(np.linspace(Y_.min(), Y_.max(), 5))
+    ax1.set_zticks(np.linspace(Z_.min(), Z_.max(), 5))
     ax2.set_xlim3d(left=a, right=b)
     ax2.set_ylim3d(bottom=a, top=b)
     ax2.set_zlim3d(bottom=a, top=b)
+    ax2.set_xticks(np.linspace(X_.min(), X_.max(), 5))
+    ax2.set_yticks(np.linspace(Y_.min(), Y_.max(), 5))
+    ax2.set_zticks(np.linspace(Z_.min(), Z_.max(), 5))
     plt.savefig(f"./plots/density_plot_{(args.model_name).split('/')[-1]}.pdf", dpi=300)
-    # plt.colorbar(surf1, ax=ax1)
+    plt.colorbar(surf1, ax=ax1, shrink=0.67, aspect=16.7)
+    plt.colorbar(surf2, ax=ax2, shrink=0.67, aspect=16.7)
     plt.show()
 
 
@@ -199,8 +206,8 @@ def map_colors(p3dc, func, kde=False, cmap='viridis', inpute_nans=True):
         values[idx] = np.ones(n_nans) * avg
 
     # usual stuff
-    norm = Normalize()#vmin=0, vmax=1)
-    # norm = Normalize(vmin=0.0, vmax=0.45)
+    # norm = Normalize()#vmin=0, vmax=1)
+    norm = Normalize(vmin=0.0, vmax=0.2)
     # norm = LogNorm()#vmin=0, vmax=1)
     colors = get_cmap(cmap)(norm(values))
     # set the face colors of the Poly3DCollection

@@ -99,14 +99,14 @@ def hutchinson_estimate(latent, function, num_hutchinson_samples, hutchinson_dis
         # into a vector of shape (batch_size*num_hutch_samples x latent_dim)
         # NOTE: Need to transpose first to get desired stacking from reshape
         vector = tensor.transpose(1, 2).reshape(
-            x.shape[0] * num_hutchinson_samples, x.shape[1]
+            latent.shape[0] * num_hutchinson_samples, latent.shape[1]
         )
         return vector
 
     def vector_to_tensor(vector):
         # Inverse of `tensor_to_vector` above
         # NOTE: Again need to transpose to correctly unfurl num_hutch_samples as the final dimension
-        tensor = vector.reshape(x.shape[0], num_hutchinson_samples, x.shape[1])
+        tensor = vector.reshape(latent.shape[0], num_hutchinson_samples, latent.shape[1])
         return tensor.transpose(1, 2)
 
     def jac_transpose_jac_closure(tensor, function):

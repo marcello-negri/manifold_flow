@@ -89,7 +89,9 @@ def build_flow_forward(args, clamp_theta=None):
         manifold_mapping = LearnableManifoldFlow(n=args.datadim - 1, max_radius=1., logabs_jacobian=args.logabs_jacobian)
     else:
         if args.dataset == "lp_uniform":
-            manifold_mapping = LpManifoldFlow(norm=1, p=args.beta, logabs_jacobian=args.logabs_jacobian)
+            # manifold_mapping = LpManifoldFlow(norm=1, p=args.beta, logabs_jacobian=args.logabs_jacobian)
+            manifold_mapping = LpManifoldFlow(norm=1., p=args.beta, logabs_jacobian=args.logabs_jacobian,
+                                              given_radius=args.radius)
         else:
             # manifold_mapping = DeformedSphereFlow(r=1., logabs_jacobian=args.logabs_jacobian, manifold_type=args.manifold_type)
             manifold_mapping = SphereFlow(n=args.datadim - 1, r=1., logabs_jacobian=args.logabs_jacobian)
@@ -149,7 +151,8 @@ def build_flow_reverse(args, clamp_theta=None):
     else:
         if args.dataset == "lp_uniform":
             if isinstance(base_dist, UniformSphere):
-                manifold_mapping = LpManifoldFlow(norm=1., p=args.beta, logabs_jacobian=args.logabs_jacobian)
+                # manifold_mapping = LpManifoldFlow(norm=1., p=args.beta, logabs_jacobian=args.logabs_jacobian)
+                manifold_mapping = LpManifoldFlow(norm=1., p=args.beta, logabs_jacobian=args.logabs_jacobian, given_radius=args.radius)
                 # radius = np.array(manifold_mapping.r_given_theta(base_dist.sample(1000)))
                 # norm = RADIUS_CONST / radius.mean()
                 # manifold_mapping.norm = norm
@@ -162,7 +165,7 @@ def build_flow_reverse(args, clamp_theta=None):
             manifold_mapping = DeformedSphereFlow(r=1., logabs_jacobian=args.logabs_jacobian, manifold_type=args.manifold_type)
         else:
             # manifold_mapping = SphereFlow(n=args.datadim - 1, r=RADIUS_CONST, logabs_jacobian=args.logabs_jacobian)
-            manifold_mapping = SphereFlow(n=args.datadim - 1, r=1, logabs_jacobian=args.logabs_jacobian)
+            manifold_mapping = SphereFlow(n=args.datadim - 1, r=args.radius, logabs_jacobian=args.logabs_jacobian)
 
     transformation_layers.append(manifold_mapping)
 
@@ -191,12 +194,12 @@ def build_flow_circular_fwd(flow_dim, n_layers=3, hidden_features=256, device='c
     )
 
     for _ in range(n_layers):
-        transformation_layers.append(RandomPermutation(features=flow_dim - 1))
+        # transformation_layers.append(RandomPermutation(features=flow_dim - 1))
         transformation_layers.append(
             InverseTransform(
                 CircularAutoregressiveRationalQuadraticSpline(num_input_channels=flow_dim - 1,
                                                               num_hidden_channels=hidden_features,
-                                                              num_blocks=3, num_bins=20, tail_bound=1,
+                                                              num_blocks=5, num_bins=10, tail_bound=1,
                                                               ind_circ=[i for i in range(flow_dim - 1)])
             )
         )
@@ -209,7 +212,7 @@ def build_flow_circular_fwd(flow_dim, n_layers=3, hidden_features=256, device='c
         #     )
         # )
 
-    epsilon = 1e-3
+    epsilon = 1e-2
     transformation_layers.append(
         CompositeTransform([
             ScalarScale(scale=1 - epsilon, trainable=False, eps=0),
@@ -263,11 +266,13 @@ def build_flow_circular_rvs(flow_dim, n_layers=3, hidden_features=256, device='c
         #
         # )
 
+    epsilon = 1e-2
     transformation_layers.append(
         InverseTransform(
             CompositeTransform([
+                ScalarScale(scale=1.- epsilon, trainable=False),
                 ScalarShift(shift=1., trainable=False),
-                ScalarScale(scale=0.5 * np.pi, trainable=False),
+                ScalarScale(scale=0.5 * np.pi - epsilon, trainable=False),
                 ScaleLastDim(scale=2)
             ])
         )
@@ -490,8 +495,9 @@ def build_cond_flow_circular_rvs(flow_dim, n_layers=3, hidden_features=256, cont
     transformation_layers.append(
         InverseTransform(
             CompositeTransform([
+                ScalarScale(scale=1. - epsilon, trainable=False),
                 ScalarShift(shift=1., trainable=False),
-                ScalarScale(scale=0.5 * np.pi, trainable=False),
+                ScalarScale(scale=0.5 * np.pi - epsilon, trainable=False),
                 ScaleLastDim(scale=2)
             ])
         )

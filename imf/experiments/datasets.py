@@ -386,6 +386,16 @@ class LpUniform(Uniform):
 
         return r.unsqueeze(-1)
 
+    def compute_log_surface(self):
+        # NOTE: this is exact only for beta=1
+        if self.args.beta == 1:
+            d = self.args.datadim - 1
+            r = self.args.radius
+            log_area_simplex = 0.5 * np.log(d + 1) - sp.special.loggamma(d+1)
+            self.log_surface_area = (d + 1) * np.log(2.) + log_area_simplex + d * np.log(r)
+        else:
+            self.log_surface_area = 1.
+
 
 class DeformedSphereDataset1(Uniform):
     def __init__(self, args):
@@ -432,10 +442,11 @@ class DeformedSphereDataset1(Uniform):
             logp = 0.5*torch.sin(3*points_sph[:, 2]) - self.log_norm_const# * torch.sin(6*points_sph[:, 2])
         if self.args.manifold_type == 4:
             logp = torch.exp(torch.sin(4*points_sph[:, 1]) * torch.sin(4*points_sph[:, 2]))
+            # logp = torch.sin(4*points_sph[:, 1]) * torch.sin(4*points_sph[:, 2])
         if self.args.manifold_type == 0:
             logp = 3 * torch.sin(points_sph[:, 1]) * torch.sin(points_sph[:, 2])
         # logp = torch.exp(torch.sin(4*points_sph[:, 1]) * torch.sin(4*points_sph[:, 2]))
-        logp = torch.ones(points.shape[0], device=self.args.device)
+        # logp = torch.ones(points.shape[0], device=self.args.device)
         return logp
         # return logp
 
