@@ -10,7 +10,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 def define_model_name(args, dataset):
-    args.model_name = (f"./models/imf_{args.dataset}_{args.architecture}_lm{args.learn_manifold}_{args.logabs_jacobian}"
+    args.model_name = (f"./models/imf_{args.dataset}_kl_div{args.kl_div}_{args.architecture}_lm{args.learn_manifold}_{args.logabs_jacobian}"
                        f"{dataset.dataset_suffix}_epochs{args.epochs}_seed{args.seed}")
 
 def spherical_to_cartesian_torch(arr):

@@ -4,16 +4,18 @@ import torch
 import os
 import argparse
 import tqdm
+from geomstats.visualization import Sphere
+from enflows.transforms import NaiveLinear
 from sklearn import metrics
 from scipy.stats import wasserstein_distance
 from dask.array.random import vonmises
 from torch.onnx.symbolic_opset9 import clamp
 
-from enflows.distributions import Uniform
+from enflows.distributions import Uniform, StandardNormal
 from enflows.distributions.uniform import UniformSphere
 from enflows.flows.base import Flow
 from enflows.transforms.base import InverseTransform, CompositeTransform
-from enflows.transforms.injective import ScaleLastDim, LearnableManifoldFlow, SphereFlow, LpManifoldFlow
+from enflows.transforms.injective import ScaleLastDim, LearnableManifoldFlow, SphereFlow, LpManifoldFlow, ConstrainedAnglesSigmoid
 
 from imf.experiments.utils_manifold import train_model_forward, train_model_reverse, generate_samples
 from imf.experiments.utils_manifold import  define_model_name
@@ -68,29 +70,24 @@ parser.add_argument('--radius', metavar='ra', type=float, default=1.0, help='rad
 
 args = parser.parse_args()
 
-def build_flow_manifold_minimal(args, device='cuda'):
-    torch_pi = torch.tensor(np.pi).to(device)
-    torch_zero = torch.zeros(1).to(device)
-    # torch_one = torch.ones(1).to(device)
-    # base_dist = Uniform(shape=[flow_dim - 1], low=-torch_pi, high=torch_pi)
+def build_flow_manifold_minimal(n_dim, logabs_jacobian, device='cuda'):
+    # base_dist = UniformSphere(shape=[n_dim - 1])
     # base_dist = Uniform(shape=[args.datadim - 1], low=torch_zero, high=torch_pi)
-    base_dist = Uniform(shape=[args.datadim - 1], low=torch_zero, high=torch_pi)
-
+    base_dist = StandardNormal(shape=[n_dim - 1])
     # Define an invertible transformation
     transformation_layers = []
 
     transformation_layers.append(
         InverseTransform(
-            ScaleLastDim()
+            NaiveLinear(features=n_dim - 1)
         )
     )
-
-    manifold_mapping = LearnableManifoldFlow(n=args.datadim - 1, max_radius=2., logabs_jacobian=args.logabs_jacobian)
+    transformation_layers.append(
+        ConstrainedAnglesSigmoid(temperature=1, learn_temperature=True)
+    )
 
     transformation_layers.append(
-        InverseTransform(
-            manifold_mapping
-        )
+            SphereFlow(n=n_dim - 1, logabs_jacobian=logabs_jacobian)
     )
 
     transformation_layers = transformation_layers[::-1]
@@ -115,25 +112,51 @@ def main():
     n_samples = 20
     n_hutchinson_samples = np.linspace(1,100, n_samples).astype(int)
 
-    manifold_mapping = LearnableManifoldFlow(n=n_dim - 1, max_radius=2., logabs_jacobian="analytical_block").to(args.device)
-    base_dist = UniformSphere(shape=[n_dim-1])
+    # manifold_mapping = LearnableManifoldFlow(n=n_dim - 1, max_radius=2., logabs_jacobian="analytical_block").to(args.device)
+    # manifold_mapping = SphereFlow(n=n_dim - 1, logabs_jacobian="analytical_block").to(args.device)
+    # base_dist = UniformSphere(shape=[n_dim-1])
+    # base_samples = base_dist.sample(n_reps).to(args.device)
+    # base_samples = torch.ones(n_reps, n_dim-1).to(args.device)
+    # eps = 1e-1
+    # base_samples = torch.rand(n_reps, n_dim-1).to(args.device) * (torch.pi - eps) + eps
+    # base_samples.requires_grad_(True)
+
+    base_dist = StandardNormal(shape=[n_dim - 1])
     base_samples = base_dist.sample(n_reps).to(args.device)
-    base_samples.requires_grad_(True)
+    # base_samples = torch.ones(n_reps, n_dim-1).to(args.device)
+    # eps = 1e-1
+    # base_samples = torch.rand(n_reps, n_dim-1).to(args.device) * (torch.pi - eps) + eps
+    # base_samples.requires_grad_(True)
+
+    manifold_flow = build_flow_manifold_minimal(n_dim, logabs_jacobian="analytical_block")
+    # ambient_samples = torch.randn(n_reps, n_dim).to(args.device)
+    # theta_samples, _ = manifold_mapping.forward(ambient_samples)
+    # proj_samples, _ = manifold_mapping.inverse(theta_samples)
+    # proj_samples = proj_samples.detach()
+    # proj_samples.requires_grad_(True)
 
     grad_jacobian_exact = []
     for i in range(n_reps):
-        data_manifold, logabsdet_exact = manifold_mapping.inverse(base_samples[i:i+1], context)
-        grad_exact_logdet = torch.autograd.grad(logabsdet_exact, manifold_mapping.parameters(), allow_unused=True)
+        # data_manifold, logabsdet_exact = manifold_mapping.inverse(base_samples[i:i+1], context)
+        data_manifold, logabsdet_exact = manifold_flow._transform.inverse(base_samples[i:i + 1], context)
+        # data_manifold, logabsdet_exact = manifold_mapping.forward(proj_samples[i:i+1], context)
+        # grad_exact_logdet = torch.autograd.grad(logabsdet_exact, manifold_mapping.parameters())
+        grad_exact_logdet = torch.autograd.grad(logabsdet_exact, manifold_flow._transform._transforms[2].parameters())
         grad_jacobian_exact.append(grad_exact_logdet[0])
-
-    manifold_mapping.logabs_jacobian = "fff"
+    breakpoint()
+    manifold_flow._transform._transforms[0].logabs_jacobian = "fff"
+    # manifold_mapping.logabs_jacobian = "fff"
     grad_jacobian_approx = []
     for n in n_hutchinson_samples:
-        manifold_mapping.n_hutchinson_samples = n
+        manifold_flow._transform._transforms[0].n_hutchinson_samples = n
+        # manifold_mapping.n_hutchinson_samples = n
         inner_grads = []
         for i in range(n_reps):
-            data_manifold, logabsdet_approx = manifold_mapping.inverse(base_samples[i:i + 1], context)
-            grad_approx_logdet = torch.autograd.grad(logabsdet_approx, manifold_mapping.parameters(), allow_unused=True)
+            # data_manifold, logabsdet_approx = manifold_mapping.inverse(base_samples[i:i + 1], context)
+            data_manifold, logabsdet_approx = manifold_flow._transform.inverse(base_samples[i:i + 1], context)
+            # data_manifold, logabsdet_approx = manifold_mapping.forward(proj_samples[i:i + 1], context)
+            # grad_approx_logdet = torch.autograd.grad(logabsdet_approx, manifold_mapping.parameters(), allow_unused=True)
+            grad_approx_logdet = torch.autograd.grad(logabsdet_approx, manifold_flow._transform._transforms[2].parameters())
             inner_grads.append(grad_approx_logdet[0])
         grad_jacobian_approx.append(inner_grads)
 
@@ -142,6 +165,7 @@ def main():
     for n in range(len(n_hutchinson_samples)):
         norms = [torch.norm(grad_jacobian_exact[i] - grad_jacobian_approx[n][i]).item() for i in range(n_reps)]
         norms = np.array(norms)
+        print(norms)
         diff_mean.append(norms.mean())
         diff_std.append(norms.std())
     plt.errorbar(x=n_hutchinson_samples, y=diff_mean, yerr=diff_std)

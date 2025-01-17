@@ -23,6 +23,7 @@ parser.add_argument('--seed', metavar='s', type=int, default=1234, help='random 
 parser.add_argument("--overwrite", action="store_true", help="re-train and overwrite flow model")
 parser.add_argument("--n_layers", metavar='nl', type=int, default=10, help='number of layers in the flow model')
 parser.add_argument("--n_hidden_features", metavar='nf', type=int, default=256, help='number of hidden features in the embedding space of the flow model')
+parser.add_argument("--kl_div", type=str, default="forward", choices=["forward", "reverse"])
 # parser.add_argument("--bruteforce", action="store_true", help="compute the rectangular jacobian term bruteforce")
 parser.add_argument("--logabs_jacobian", type=str, default="analytical_lu", choices=["analytical_sm", "analytical_lu", "cholesky", "fff", "rect"])
 parser.add_argument("--architecture", type=str, default="circular", choices=["circular", "ambient", "unbounded", "unbounded_circular"])
@@ -139,12 +140,14 @@ def main():
     import pandas as pd
     import seaborn as sns
     torch.autograd.set_detect_anomaly(True)
-    n_reps = 20
+    n_reps = 21
     n_sums = 1
     n_dims = 10
 
-    # dimensions = np.logspace(3, 4.1, n_dims, dtype='int')
-    dimensions = np.linspace(3000, 12000, n_dims, dtype='int')
+    # dimensions = np.logspace(2, 4.1, n_dims, dtype='int')
+
+    # dimensions = np.logspace(np.log10(7000), np.log10(12000), n_dims, dtype='int')
+    dimensions = np.linspace(5, 12000, n_dims, dtype='int')
 
     np.random.seed(1234)
     torch.manual_seed(1234)
@@ -152,29 +155,52 @@ def main():
     # data_base = data_base.double()
     # logabs_names = ["cholesky", "analytical_lu", "analytical_sm"]
     # logabs_names = ["cholesky", "analytical_gauss"]
-    logabs_names = ["cholesky", "analytical_lu", "analytical_block", "approx"]
+    logabs_names = ["cholesky", "analytical_block"]
     # labels = ["cholesky", "ours(lu)", "ours(sm)"]
-    labels = ["cholesky", "ours_lu", "ours_block", "approx"]
+    labels = ["brute_force", "ours"]
     logabs_dict = dict(zip(logabs_names, labels))
-    if os.path.isfile('results_runtime.csv'):
-        runtime_df = pd.read_csv('results_runtime.csv')
-        for key in logabs_dict.keys():
+    colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
+    if os.path.isfile('results_runtime_.csv') and not args.overwrite:
+        runtime_df = pd.read_csv('results_runtime_.csv')
+        for i, key in enumerate(logabs_dict.keys()):
             label = logabs_dict[key]
-            runtime = runtime_df[runtime_df["logabsdet"]==label].groupby("datadim")["runtime"].mean().reset_index().to_numpy()
-            plt.plot(runtime[:, 0], runtime[:, 1], marker=".", label=label)
-        plt.legend()
+            runtime_mean = runtime_df[runtime_df["logabsdet"]==label].groupby("datadim")["runtime"].mean().reset_index().to_numpy()
+            runtime_std = runtime_df[runtime_df["logabsdet"]==label].groupby("datadim")["runtime"].std().reset_index().to_numpy()
+            # ax = sns.boxplot(x="datadim", y="runtime", hue="logabsdet", data=runtime_df)
+            # ax.plot(runtime_mean[:, 0], runtime_mean[:, 1], marker=".", label=label)
+            color = colors[i % len(colors)]
+            plt.plot(runtime_mean[:, 0], runtime_mean[:, 1], linewidth=3, alpha=0.5, color=color)
+            plt.errorbar(runtime_mean[:, 0], runtime_mean[:, 1], 3*runtime_std[:,1], capsize=4, fmt="o", label=label, linewidth=3, alpha=1, color=color)
+        plt.ylabel("runtime (s)", fontsize="16")
+        plt.xlabel("dimension", fontsize="16")
+        plt.legend(fontsize="16")
+        # plt.savefig("runtime_comparison_full.pdf", dpi=300)
         plt.show()
 
         from scipy import stats
-        for key in logabs_dict.keys():
+        plt.figure(figsize=(4,5))
+        for i, key in enumerate(logabs_dict.keys()):
             label = logabs_dict[key]
-            runtime = runtime_df[runtime_df["logabsdet"]==label].groupby("datadim")["runtime"].mean().reset_index().to_numpy()
-            plt.plot(runtime[:, 0], runtime[:, 1], marker=".", label=label)
-            slope, intercept, _, _, _ = stats.linregress(np.log(runtime[:, 0]), np.log(runtime[:, 1]))
+            runtime_mean = runtime_df[runtime_df["logabsdet"] == label].groupby("datadim")["runtime"].mean().reset_index().to_numpy()
+            runtime_std = runtime_df[runtime_df["logabsdet"] == label].groupby("datadim")["runtime"].std().reset_index().to_numpy()
+            # plt.errorbar(runtime_mean[:, 0], runtime_mean[:, 1], 3*runtime_std[:,1], capsize=3, marker=".", label=label)
+            color = colors[i % len(colors)]
+            plt.plot(runtime_mean[:, 0], runtime_mean[:, 1], linewidth=3, alpha=0.5, color=color)
+            plt.errorbar(runtime_mean[:, 0], runtime_mean[:, 1], 3 * runtime_std[:, 1], capsize=4, fmt="o", label=label,linewidth=3, alpha=1, color=color)
+            slope, intercept, _, _, _ = stats.linregress(np.log(runtime_mean[:, 0]), np.log(runtime_mean[:, 1]))
             print(f"{key} slope:{slope:.3f} and intercept:{intercept:.3f}")
         plt.xscale("log")
         plt.yscale("log")
-        plt.legend()
+        # plt.legend(fontsize="16")
+        ax = plt.gca()
+        ax.yaxis.set_label_position('right')  # Move the label
+        ax.yaxis.tick_right()
+        plt.ylabel("runtime (log scale)", fontsize="16")
+        plt.xlabel("dimension (log scale)", fontsize="16")
+        plt.xticks([7000, 12000])
+        plt.minorticks_off()
+        plt.tight_layout()
+        plt.savefig("runtime_comparison_zoomed_in.pdf", dpi=300)
         plt.show()
         breakpoint()
     else:
@@ -183,8 +209,7 @@ def main():
         # args.learn_manifold = True
         for dim in dimensions:
             args.datadim = int(dim)
-            input_data = torch.tensor(torch.rand((1, args.datadim)), requires_grad=True).to('cuda')
-            input_data_norm = input_data / input_data.norm()
+
             # unif_sphere_dist = UniformSphere(shape=[args.datadim - 1])
             # data_base = unif_sphere_dist.sample(1).to(args.device).requires_grad_(True)
 
@@ -194,6 +219,7 @@ def main():
             # data_base = torch.tensor(torch.rand((1, args.datadim - 1)), requires_grad=True).to('cuda')
             # data_base = data_base * 2 - 1
             # data_base[0, -1] *= 2
+
             for logabs_jacobian in logabs_names:
                 args.logabs_jacobian = logabs_jacobian
                 print(args)
@@ -201,14 +227,26 @@ def main():
                 # flow = build_minimal_flow_forward(args)
                 # data_manifold, logabsdet = flow._transform.inverse(data_base, context)
                 manifold_mapping = LearnableManifoldFlow(n=args.datadim - 1, max_radius=2., logabs_jacobian=args.logabs_jacobian).to(args.device)
-                manifold_mapping.forward(input_data_norm)
+                optimizer = torch.optim.Adam(manifold_mapping.parameters(), lr=1e-3)
+                # manifold_mapping.forward(input_data_norm)
+
                 for _ in tqdm.tqdm(range(n_reps)):
+                    optimizer.zero_grad()
+                    observed_data = torch.tensor(torch.rand((1, args.datadim)), requires_grad=True).to('cuda')
+                    observed_data = observed_data / observed_data.norm()
+                    if args.kl_div == "reverse":
+                        latent_data, _ = manifold_mapping.forward(observed_data, context)
                     torch.cuda.synchronize()
                     start_time = time.monotonic()
                     # torch.cuda.synchronize()
                     # data_manifold, logabsdet = flow._transform.inverse(data_base, context)
                     # manifold_mapping.inverse(data_base)
-                    output, logabsdet = manifold_mapping.forward(input_data_norm)
+                    if args.kl_div == "reverse":
+                        data_manifold, logabsdet = manifold_mapping.inverse(latent_data, context)
+                    elif args.kl_div == "forward":
+                        output, logabsdet = manifold_mapping.forward(observed_data, context)
+                    logabsdet.mean().backward()
+                    optimizer.step()
                     # print(torch.cuda.memory_summary())
                     torch.cuda.synchronize()
                     end_time = time.monotonic()
@@ -218,24 +256,12 @@ def main():
 
                     entry_dict = dict(datadim=dim, logabsdet=logabs_dict[logabs_jacobian], learn_manifold=args.learn_manifold,
                                       runtime=float(time_diff_seconds))
-                    results.append(entry_dict)
+                    if _ > 1:
+                        results.append(entry_dict)
 
         runtime_df = pd.DataFrame(results)
-        runtime_df.to_csv("results_runtime.csv", index=False)
+        runtime_df.to_csv("results_runtime_zoomed_in.csv", index=False)
 
-
-    def load_results_csv(logabs_jacobian, dimensions, n_sums, n_reps):
-        n_dims = dimensions.shape[0]
-        n_per_dim = n_reps * n_sums
-        results_pd = pd.read_csv(f"results_{logabs_jacobian}_manifold.csv", header=None)
-        results_pd = results_pd.drop(index=[i*n_per_dim for i in range(n_dims)]).reset_index(drop=True)
-        results_pd.columns = ["runtime"]
-        results_pd["logabsdet"] = logabs_jacobian
-        results_pd["datadim"] = 0
-        for i in range(n_dims):
-            results_pd.loc[i * n_per_dim:(i + 1) * n_per_dim, 'datadim'] = dimensions[i]
-
-        return results_pd
 
     plt.figure(figsize=(12, 5), dpi=80)
     ax = sns.boxplot(x="datadim", y="runtime", hue="logabsdet", data=runtime_df)  # RUN PLOT
